@@ -60,21 +60,35 @@ download the official Windows build and put `vina.exe` on `PATH`, or drop
 it in `bin\vina.exe` next to `desktop.py` (`desktop.py` prepends `bin\` to
 `PATH` at startup).
 
-## 2. Prepare the bundled data (once, before packaging)
+## 2. Prepare the bundled data (REQUIRED, before every packaging run)
 Everything below is small enough to ship directly in the installer
 (unlike `models/`/`docking_targets/`, ~101GB/2.3GB — those stay
 on-demand, see §4):
 
-    docking_registry.json          (~2MB, metadata only)
-    panel_results_v2.csv           (~37MB)
-    models\curated\                (~15MB)
+    docking_registry.json          (~2MB, metadata only — already committed)
+    panel_results_v2.csv           (~37MB — already committed)
+    models\curated\                (~15MB — already committed)
     target_prediction_v2_data\     (~241MB — v2_index, orthologue_index,
-                                     target_name_map.json; already staged
-                                     at the repo root, built from
-                                     target_prediction_v2/phase2/v2_index,
-                                     target_prediction_v2/phase3/orthologue_index,
-                                     and target_prediction_v2/phase2/data/target_name_map.json —
-                                     re-copy after any v2 index rebuild)
+                                     target_name_map.json)
+
+The first three are already in the repo. `target_prediction_v2_data\` is
+**not** — it's gitignored (a build-time staging copy of data that's
+already tracked elsewhere, not a distinct source artifact — the actual
+source is `target_prediction_v2/phase2/v2_index/` and
+`target_prediction_v2/phase3/orthologue_index/`, committed via Git LFS).
+**A real CI failure on the first build caught this exact gap**: nothing
+ever created `target_prediction_v2_data/` before PyInstaller ran, which
+then failed outright with `Unable to find ...target_prediction_v2_data
+when adding binary and data files`. Run this yourself before packaging
+locally (the CI workflow now does the equivalent automatically — see
+its "Stage target_prediction_v2_data" step):
+
+    mkdir target_prediction_v2_data
+    xcopy /E /I target_prediction_v2\phase2\v2_index target_prediction_v2_data\v2_index
+    xcopy /E /I target_prediction_v2\phase3\orthologue_index target_prediction_v2_data\orthologue_index
+    copy target_prediction_v2\phase2\data\target_name_map.json target_prediction_v2_data\target_name_map.json
+
+Re-run this after any v2 index rebuild.
 
 ## 3. Remote GNINA setup (once, on a GPU server — not the Windows machine)
     cd backend

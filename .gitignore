@@ -32,9 +32,17 @@ frontend/.env.*.local
 # rebuild to restore -- so those two ARE committed (via Git LFS, see
 # .gitattributes; both binary files well past the useful-as-a-plain-diff
 # size anyway).
-target_prediction_v2/**/data/
 target_prediction_v2/**/results/
 target_prediction_v2/**/*.log
+# Excludes data/ CONTENTS (not the directory itself via a trailing-slash
+# pattern) specifically so the negation below can still un-ignore one
+# file inside it -- git won't recurse into an ignored directory to
+# apply a file-level negation, a real gitignore gotcha that broke this
+# once already (target_name_map.json silently never got committed).
+target_prediction_v2/**/data/*
+# Exception: small (263KB), needed at serving time (target display names)
+# and by the desktop build's staging step -- not raw pipeline data.
+!target_prediction_v2/phase2/data/target_name_map.json
 
 # Desktop-build staging copy of target_prediction_v2/phase2/v2_index +
 # phase3/orthologue_index + phase2/data/target_name_map.json --

@@ -70,6 +70,22 @@ jobs:
             echo "version=0.0.0-dev.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Stage target_prediction_v2_data (v2_index + orthologue_index + target_name_map.json)
+        # Real bug hit on the first CI run: target_prediction_v2_data/ is
+        # gitignored (a build-time staging copy, not a distinct source
+        # artifact -- see .gitignore) but no step ever actually built it
+        # before this workflow's PyInstaller step ran, which then failed
+        # outright with "Unable to find ...target_prediction_v2_data when
+        # adding binary and data files." BUILD_WINDOWS.md documented this
+        # as a manual pre-packaging step for a local build; CI needs the
+        # automated equivalent.
+        shell: bash
+        run: |
+          mkdir -p target_prediction_v2_data
+          cp -r target_prediction_v2/phase2/v2_index target_prediction_v2_data/v2_index
+          cp -r target_prediction_v2/phase3/orthologue_index target_prediction_v2_data/orthologue_index
+          cp target_prediction_v2/phase2/data/target_name_map.json target_prediction_v2_data/target_name_map.json
+
       - name: PyInstaller (see BUILD_WINDOWS.md for what each flag is for)
         run: >
           pyinstaller --noconfirm --windowed --name PhytoScreen
