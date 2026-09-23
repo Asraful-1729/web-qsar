@@ -36,6 +36,16 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
+        # Fourth real failure caught by this pipeline: without this,
+        # actions/checkout only pulls LFS-tracked files (v2_index/
+        # fingerprints.npz, target_fishing_index/*, etc.) as their tiny
+        # (~130-byte) pointer text files, not the real binary content.
+        # numpy's np.load() then chokes on that pointer file trying to
+        # parse it as a .npz archive -- manifesting as a confusing
+        # "This file contains pickled (object) data" error that has
+        # nothing to do with the real data actually being pickled.
 
       - uses: actions/setup-python@v5
         with:
