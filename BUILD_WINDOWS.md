@@ -58,7 +58,12 @@ without it).
 AutoDock Vina **is** a hard requirement for docking to activate at all —
 download the official Windows build and put `vina.exe` on `PATH`, or drop
 it in `bin\vina.exe` next to `desktop.py` (`desktop.py` prepends `bin\` to
-`PATH` at startup).
+`PATH` at startup). The CI workflow does this automatically (a third
+real build failure caught `bin\` not existing at all — see its "Download
+AutoDock Vina" step); for a local build:
+
+    mkdir bin
+    curl -L -o bin\vina.exe https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.7/vina_1.2.7_win.exe
 
 ## 2. Prepare the bundled data (REQUIRED, before every packaging run)
 Everything below is small enough to ship directly in the installer

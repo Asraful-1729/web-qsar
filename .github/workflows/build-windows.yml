@@ -70,6 +70,20 @@ jobs:
             echo "version=0.0.0-dev.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Download AutoDock Vina (Windows) into bin/
+        # Second real CI failure caught this: bin/ (for vina.exe --
+        # desktop.py prepends it to PATH at startup, see
+        # _put_bundled_binaries_on_path()) never existed at all, so
+        # --add-data "bin;bin" failed outright the same way
+        # target_prediction_v2_data did. Vina IS a hard requirement for
+        # docking to activate (per BUILD_WINDOWS.md) and DOES have an
+        # official Windows build (Apache-2.0, freely redistributable) --
+        # unlike GNINA/fpocket, there's no reason to ship without it.
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path bin | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.7/vina_1.2.7_win.exe" -OutFile "bin\vina.exe"
+
       - name: Stage target_prediction_v2_data (v2_index + orthologue_index + target_name_map.json)
         # Real bug hit on the first CI run: target_prediction_v2_data/ is
         # gitignored (a build-time staging copy, not a distinct source
