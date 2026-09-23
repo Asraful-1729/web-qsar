@@ -226,13 +226,29 @@ jobs:
           }
           Write-Host "Predict OK: pIC50=$($pred.in_domain[0].predicted_pIC50)"
 
-          try {
-            $admet = Invoke-RestMethod -Method Post "$base/api/admet" -TimeoutSec 30 `
-              -ContentType "application/json" -Body '{"target_id":"_","smiles":["CCO"]}'
-          } catch { Fail "POST /api/admet threw: $_" }
-          $learned = $admet.profiles[0].learned
-          if (-not $learned.available) {
-            Fail "ADMET-AI worker's learned layer is unavailable: $($learned.note)"
+          # Real failure caught on the first successful-packaging run: this
+          # check fired ~15s after process start with no retry, while the
+          # ADMET-AI worker (a separate background thread loading a real
+          # learned model, see desktop.py's start_admet_worker()) was
+          # still mid-load -- desktop.log showed no crash at all, just
+          # "backend is up, serving" and nothing further, confirming this
+          # was a timing gap in the check itself, not a packaging bug.
+          # Retry with a genuine wait, same idea as the initial
+          # /api/health loop above, just a longer budget (a real
+          # ChemProp-based model load, first run, cold CI hardware).
+          $learned = $null
+          for ($i = 0; $i -lt 24; $i++) {
+            try {
+              $admet = Invoke-RestMethod -Method Post "$base/api/admet" -TimeoutSec 30 `
+                -ContentType "application/json" -Body '{"target_id":"_","smiles":["CCO"]}'
+              $learned = $admet.profiles[0].learned
+              if ($learned.available) { break }
+            } catch { }
+            Start-Sleep -Seconds 5
+          }
+          if (-not $learned -or -not $learned.available) {
+            $note = if ($learned) { $learned.note } else { "(no successful response after retries)" }
+            Fail "ADMET-AI worker's learned layer is unavailable after retrying for 120s: $note"
           }
           Write-Host "ADMET-AI worker OK: learned layer available."
 
