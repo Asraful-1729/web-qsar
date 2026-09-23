@@ -1,0 +1,531 @@
+import { Fragment, useState } from "react";
+import * as api from "../lib/api";
+import { useAdvancedDocking, isGeneOnly } from "../lib/useAdvancedDocking";
+import { useMoleculeInput } from "../lib/useMoleculeInput";
+import { MoleculeInputPanel } from "../components/MoleculeInputPanel";
+import { TargetBrowser } from "../components/TargetBrowser";
+import { DockingModeSection } from "../components/DockingModeSection";
+import { AdvancedSettingsPanel } from "../components/AdvancedSettingsPanel";
+import { WhyThisButton } from "../components/RecommendationPanel";
+import { SectionIntro, ResultHeader, ResultName, Stat, SidebarLayout, useSidebarCollapsed } from "../components/Shell";
+import { ConfidenceDot, Disclaimer, EmptyState, ErrorBox, Notice } from "../components/Feedback";
+import { LeafLattice, DownloadIcon } from "../components/Icons";
+import { DockDetailPanel, FreshDecoyButton } from "../components/DockingPieces";
+import { InteractionLogTable, InteractionTableToggle } from "../components/InteractionLogTable";
+import { RedockingValidationNote } from "../components/RedockingValidationNote";
+import { tierClass } from "../lib/tierClass";
+import type { AdvancedDockingBody, DockResultRow, ScreenResult } from "../lib/types";
+
+const SCREEN_STEPS = [
+  "Parse & standardise SMILES",
+  "Featurise (RDKit 2D + MACCS + Morgan)",
+  "Applicability-domain check",
+  "QSAR potency prediction",
+  "ADMET profiling",
+  "Docking",
+  "Rank & fuse evidence",
+  "Finalise & export",
+];
+
+type FlowState =
+  | { kind: "idle" }
+  | { kind: "steps"; step: number; note: string; jobId: string }
+  | { kind: "dock-submit" }
+  | { kind: "dock-poll"; done: number; total: number; caveat: string | null; jobId: string }
+  | { kind: "error"; message: string }
+  | { kind: "cancelled" }
+  | { kind: "screen-done"; result: ScreenResult; jobId: string; targetId: string; advanced: AdvancedDockingBody | null }
+  | {
+      kind: "dock-done";
+      results: DockResultRow[];
+      receptorPdbPath: string | null;
+      targetId: string;
+      advanced: AdvancedDockingBody | null;
+      caveat: string | null;
+      cancelled?: boolean;
+      jobId?: string;
+    };
+
+export function ScreenTab() {
+  const [targetId, setTargetId] = useState("");
+  const adv = useAdvancedDocking(targetId);
+  const mol = useMoleculeInput();
+  const [plantSource, setPlantSource] = useState("");
+  const [flow, setFlow] = useState<FlowState>({ kind: "idle" });
+  const geneOnly = isGeneOnly(targetId);
+  const [sidebarCollapsed, toggleSidebar] = useSidebarCollapsed();
+
+  /** Shared by a normal gene-only-docking submit and A6's "Reproduce this
+      analysis" — both just need a job id + the caveat/advanced context to
+      poll to completion the same way. */
+  const pollDock = async (jobId: string, caveat: string | null, advBody: AdvancedDockingBody | null, tId: string) => {
+    setFlow({ kind: "dock-poll", done: 0, total: 0, caveat, jobId });
+    while (true) {
+      await api.sleep(2000);
+      const s = await api.pollRetry(() => api.dockingJob(jobId));
+      if (s.status === "done" || s.status === "cancelled") {
+        setFlow({
+          kind: "dock-done",
+          results: s.results,
+          receptorPdbPath: s.receptor_pdb_path || null,
+          targetId: tId,
+          advanced: advBody,
+          caveat,
+          cancelled: s.status === "cancelled",
+          jobId,
+        });
+        return;
+      }
+      if (s.status === "error") throw new Error(s.error || "failed");
+      setFlow({ kind: "dock-poll", done: s.done, total: s.total, caveat, jobId });
+    }
+  };
+
+  /** Same, for the QSAR+docking Screen pipeline's own job/poll shape. */
+  const pollScreen = async (jobId: string, tId: string, advBody: AdvancedDockingBody | null) => {
+    setFlow({ kind: "steps", step: 0, note: "Submitting…", jobId });
+    while (true) {
+      const s = await api.pollRetry(() => api.screenJob(jobId));
+      if (s.status === "error") throw new Error(s.error || "Screen failed.");
+      if (s.status === "cancelled") {
+        setFlow({ kind: "cancelled" });
+        return;
+      }
+      if (s.status === "done" && s.result) {
+        setFlow({ kind: "screen-done", result: s.result, jobId, targetId: tId, advanced: advBody });
+        return;
+      }
+      const note = s.step === 6 && s.total ? `Docking ${s.done || 0}/${s.total}…` : s.step_label || "Working…";
+      setFlow({ kind: "steps", step: s.step || 0, note, jobId });
+      await api.sleep(900);
+    }
+  };
+
+  const run = async () => {
+    try {
+      const smiles = await mol.resolve();
+      if (!smiles.length) throw new Error("Enter at least one SMILES.");
+      if (!targetId) throw new Error("Pick a target.");
+
+      const advBody = adv.getAdvanced();
+
+      if (geneOnly) {
+        // Checked BEFORE the generic no-binding-site message below: a gene-
+        // only target with no pre-built registry entry at all (most of the
+        // ~620 disease-associated-but-not-QSAR-modeled genes — e.g. PLEC —
+        // are deliberately never pre-built, see app.py's
+        // gene_structure_candidates docstring) has adv.site === null, which
+        // is a DIFFERENT, more actionable situation than a target that HAS
+        // a registry entry but no validated ligand (the 5 neutralized
+        // targets) — that one still gets the generic message below,
+        // correctly, since Blind mode genuinely works for those.
+        if (!advBody?.custom_profile && !adv.site) {
+          throw new Error("Pick a structure in Advanced Settings first — there's no automatic default for this target yet.");
+        }
+        if (adv.dockingMode !== "blind" && !adv.effectiveBox()[0]) {
+          throw new Error("No binding site available for this target — switch to Blind mode, or pick a structure with a real ligand in Advanced Settings.");
+        }
+        setFlow({ kind: "dock-submit" });
+        const r = await api.submitDocking(targetId, smiles, advBody, plantSource);
+        await pollDock(r.job_id, r.caveat || null, advBody, targetId);
+        return;
+      }
+
+      if (adv.dockingMode !== "blind" && !adv.effectiveBox()[0]) {
+        throw new Error("No binding site available for this target — switch to Blind mode, or pick a structure with a real ligand in Advanced Settings.");
+      }
+
+      const r = await api.submitScreen(targetId, smiles, advBody, plantSource);
+      await pollScreen(r.job_id, targetId, advBody);
+    } catch (e: any) {
+      setFlow({ kind: "error", message: e.message || "Error" });
+    }
+  };
+
+  const stop = async () => {
+    try {
+      if (flow.kind === "dock-poll") await api.cancelDocking(flow.jobId);
+      else if (flow.kind === "steps") await api.cancelScreen(flow.jobId);
+    } catch {
+      /* the poll loop will still surface a final status either way */
+    }
+  };
+
+  return (
+    <SidebarLayout
+      collapsed={sidebarCollapsed}
+      onToggle={toggleSidebar}
+      sidebar={
+        <aside className="card sticky top-[78px] flex max-h-[calc(100vh-96px)] flex-col overflow-hidden p-0">
+        <div className="flex-1 overflow-y-auto p-[18px]">
+          <SectionIntro title="Screen compounds" sub="Full pipeline: parse → featurise → AD → QSAR → ADMET → docking → ranked shortlist." />
+          <TargetBrowser targetId={targetId} onChange={setTargetId} need={["model", "docking"]} adv={adv} />
+          {!geneOnly && <WhyThisButton targetId={targetId} />}
+          <div className="mt-3">
+            <DockingModeSection adv={adv} targetId={targetId} />
+          </div>
+          <div className="mt-3">
+            <MoleculeInputPanel state={mol} />
+          </div>
+          <label className="field-label" style={{ marginTop: 12 }}>
+            Plant source (optional)
+          </label>
+          <input
+            className="field-input"
+            placeholder="e.g. Curcuma longa"
+            value={plantSource}
+            onChange={(e) => setPlantSource(e.target.value)}
+          />
+          <div className="field-hint">Traces this batch back to its natural source in the exported metadata.</div>
+          <AdvancedSettingsPanel adv={adv} openByDefault={!!targetId} />
+        </div>
+        <div className="shrink-0 border-t border-line p-[18px]">
+          <button
+            className="btn-primary w-full"
+            onClick={run}
+            disabled={flow.kind === "steps" || flow.kind === "dock-submit" || flow.kind === "dock-poll" || adv.preparingStructure}
+          >
+            {adv.preparingStructure ? "Preparing structure…" : geneOnly ? "Dock this target (no QSAR model)" : "Run screen"}
+          </button>
+        </div>
+      </aside>
+      }
+    >
+      <main className="card min-h-[60vh] overflow-hidden">
+        {flow.kind === "idle" && <EmptyState title="Run the full pipeline" hint="Select a target and enter molecules to run the full 8-step pipeline." />}
+        {flow.kind === "steps" && <StepsView step={flow.step} note={flow.note} onStop={stop} />}
+        {(flow.kind === "dock-submit" || flow.kind === "dock-poll") && (
+          <div className="px-8 py-16 text-center text-inkmut">
+            {flow.kind === "dock-poll" && flow.caveat && <Notice>{flow.caveat}</Notice>}
+            {flow.kind === "dock-submit" ? "Submitting…" : `Docking ${flow.done}/${flow.total}… (minutes per compound)`}
+            {flow.kind === "dock-poll" && (
+              <div className="mt-3">
+                <button type="button" className="btn-link" onClick={stop}>
+                  Stop
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        {flow.kind === "error" && <ErrorBox message={flow.message} />}
+        {flow.kind === "cancelled" && <Notice>Stopped by user before it finished — no partial result to show for a mid-pipeline stop.</Notice>}
+        {flow.kind === "screen-done" && <ScreenResults d={flow.result} jobId={flow.jobId} advanced={flow.advanced} />}
+        {flow.kind === "dock-done" && (
+          <>
+            {flow.cancelled && <Notice>Stopped — showing the {flow.results.length} compound(s) that finished docking before the stop request.</Notice>}
+            <GeneOnlyDockResults
+              results={flow.results}
+              receptorPdbPath={flow.receptorPdbPath}
+              targetId={flow.targetId}
+              advanced={flow.advanced}
+              caveat={flow.caveat}
+              jobId={flow.jobId}
+            />
+          </>
+        )}
+      </main>
+    </SidebarLayout>
+  );
+}
+
+function StepsView({ step, note, onStop }: { step: number; note: string; onStop: () => void }) {
+  return (
+    <div className="mx-auto flex max-w-[460px] flex-col gap-1.5 py-8">
+      <div className="mb-1.5 flex flex-col items-center gap-2 text-center text-[12.5px] text-inkmut">
+        <LeafLattice className="h-7 w-7 text-brand-500" spin />
+        Step {step}/8 — {note}
+        <button type="button" className="btn-link" onClick={onStop}>
+          Stop
+        </button>
+      </div>
+      {SCREEN_STEPS.map((label, i) => {
+        const n = i + 1;
+        const done = n < step;
+        const on = n === step;
+        return (
+          <div key={label} className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] ${on ? "bg-brand-500/[0.08]" : ""}`}>
+            <span
+              className={`flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${
+                done ? "bg-brand-500 text-white" : on ? "bg-brand-700 text-white" : "bg-surface2 text-inkmut"
+              }`}
+            >
+              {done ? "✓" : n}
+            </span>
+            <span>{label}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ScreenResults({
+  d,
+  jobId,
+  advanced,
+}: {
+  d: ScreenResult;
+  jobId: string;
+  advanced: AdvancedDockingBody | null;
+}) {
+  const [openRows, setOpenRows] = useState<Set<number>>(new Set());
+  const [interactionsOpen, setInteractionsOpen] = useState(false);
+  const toggle = (i: number) =>
+    setOpenRows((s) => {
+      const n = new Set(s);
+      n.has(i) ? n.delete(i) : n.add(i);
+      return n;
+    });
+  const c = d.counts;
+  const hasGnina = d.shortlist.some((r) => r.docking?.gnina?.cnn_score != null);
+  return (
+    <div>
+      <ResultHeader>
+        <ResultName>{d.target_id}</ResultName>
+        <Stat label="Submitted">{c.submitted}</Stat>
+        <Stat label="Parsed">{c.parsed}</Stat>
+        <Stat label="Skipped">{c.skipped}</Stat>
+        <Stat label="Docking">{d.docking_used ? "used" : "skipped"}</Stat>
+      </ResultHeader>
+      <Disclaimer>{d.methods_note}</Disclaimer>
+      {d.docking_note && !d.docking_used && <Notice>{d.docking_note}</Notice>}
+      <RedockingValidationNote result={d.redocking_validation} />
+      {!d.shortlist.length ? (
+        <div className="px-8 py-16 text-center text-inkmut">No molecules could be parsed.</div>
+      ) : (
+        <>
+          <div className="max-h-[calc(100vh-320px)] overflow-auto">
+            <table className="w-full min-w-[1440px] table-fixed border-collapse text-[13px]">
+              <thead>
+                <tr>
+                  {[
+                    { h: "#", w: "w-10" },
+                    { h: "Compound", w: "w-64" },
+                    { h: "QSAR pIC50", w: "w-24" },
+                    { h: "Confidence", w: "w-32" },
+                    ...(d.docking_used ? [{ h: "Vina", w: "w-16" }, { h: "Dock conf.", w: "w-24" }] : []),
+                    ...(hasGnina ? [{ h: "GNINA CNN", w: "w-20" }, { h: "GNINA affinity", w: "w-20" }, { h: "GNINA (kcal/mol)", w: "w-20" }] : []),
+                    { h: "Fused", w: "w-16" },
+                    { h: "Caveats", w: "w-56" },
+                    { h: "Fresh decoy check", w: "w-52" },
+                  ].map((c, i) => (
+                    <th key={i} className={`sticky top-0 z-10 border-b border-line bg-surface2 px-2.5 py-2.5 text-left text-[10.5px] font-semibold uppercase tracking-wide text-inkmut ${c.w || ""}`}>
+                      {c.h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {d.shortlist.map((r, i) => {
+                  const canView = !!(r.docking && r.docking.interaction_png);
+                  const canFreshDecoy = !!(r.docking && r.docking.status === "ok");
+                  const canReport = !!(r.docking && r.docking.vina_score != null);
+                  const hasDetail = canView || canReport;
+                  const open = openRows.has(i);
+                  return (
+                    <Fragment key={i}>
+                      <tr className={hasDetail ? "cursor-pointer hover:bg-canvas" : ""} onClick={() => hasDetail && toggle(i)}>
+                        <td className="border-b border-surface2 px-2.5 py-2.5 text-brand-600">
+                          {r.rank}
+                          {hasDetail ? (open ? " ▾" : " ▸") : ""}
+                        </td>
+                        <td className="smi-mono border-b border-surface2 px-2.5 py-2.5" title={r.smiles}>{r.smiles}</td>
+                        <td className="border-b border-surface2 px-2.5 py-2.5">
+                          {r.qsar.in_domain ? <b>{r.qsar.predicted_pIC50}</b> : <span className="text-inkmut">out-of-domain</span>}
+                        </td>
+                        <td className="border-b border-surface2 px-2.5 py-2.5">
+                          <span className="chip min-w-0 max-w-full" title={r.qsar.confidence_label}>
+                            <span className={`dot shrink-0 ${tierClass(r.qsar.confidence)}`} />
+                            <span className="min-w-0 truncate">{r.qsar.confidence_label}</span>
+                          </span>
+                        </td>
+                        {d.docking_used && (
+                          <>
+                            <td className="border-b border-surface2 px-2.5 py-2.5">{r.docking ? r.docking.vina_score ?? "—" : "—"}</td>
+                            <td className="border-b border-surface2 px-2.5 py-2.5">{r.docking ? r.docking.confidence ?? "—" : "—"}</td>
+                          </>
+                        )}
+                        {hasGnina && (
+                          <>
+                            <td className="border-b border-surface2 px-2.5 py-2.5">{r.docking?.gnina?.cnn_score ?? "—"}</td>
+                            <td className="border-b border-surface2 px-2.5 py-2.5">{r.docking?.gnina?.cnn_affinity ?? "—"}</td>
+                            <td className="border-b border-surface2 px-2.5 py-2.5">{r.docking?.gnina?.gnina_affinity ?? "—"}</td>
+                          </>
+                        )}
+                        <td className="border-b border-surface2 px-2.5 py-2.5">{r.fused_score ?? "—"}</td>
+                        <td className="border-b border-surface2 px-2.5 py-2.5">
+                          {r.caveats.length ? r.caveats.map((c, j) => (
+                            <span key={j} className="mb-0.5 block text-[11px] leading-snug text-amber">
+                              {c}
+                            </span>
+                          )) : "—"}
+                        </td>
+                        <td className="border-b border-surface2 px-2.5 py-2.5">
+                          {canFreshDecoy ? (
+                            <FreshDecoyButton smiles={r.smiles} targetId={d.target_id} advanced={advanced} parentKind="screen" parentJobId={jobId} />
+                          ) : (
+                            <span className="text-inkmut">—</span>
+                          )}
+                        </td>
+                      </tr>
+                      {hasDetail && open && (
+                        <tr>
+                          <td className="border-b border-surface2" />
+                          <td colSpan={20} className="border-b border-surface2 p-0">
+                            <DockDetailPanel r={r.docking!} receptorPdbPath={d.receptor_pdb_path} jobId={jobId} reportKind="screen" />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2.5 border-t border-line px-5 py-3">
+            {d.skipped.length ? (
+              <span className="text-[12.5px] text-inkmut">Skipped: {d.skipped.join(", ")}</span>
+            ) : (
+              <span />
+            )}
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2.5">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <InteractionTableToggle
+                  results={d.shortlist.map((r) => (r.docking ? { ...r.docking, smiles: r.smiles } : null))}
+                  open={interactionsOpen}
+                  onToggle={() => setInteractionsOpen((o) => !o)}
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2.5">
+                <span className="text-[10.5px] font-semibold uppercase tracking-wide text-inkmut">Export</span>
+                <a className="btn-link" href={api.screenExportUrl(jobId)} download>
+                  <DownloadIcon className="h-3.5 w-3.5" />
+                  CSV
+                </a>
+                {d.docking_used && (
+                  <>
+                    <a className="btn-link" href={api.screenFailureLogUrl(jobId)} download>
+                      <DownloadIcon className="h-3.5 w-3.5" />
+                      Failure log (.csv)
+                    </a>
+                    <a className="btn-link" href={api.screenExportPackageUrl(jobId)} download>
+                      <DownloadIcon className="h-3.5 w-3.5" />
+                      Full experiment package (.zip)
+                    </a>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+          <InteractionLogTable
+            results={d.shortlist.map((r) => (r.docking ? { ...r.docking, smiles: r.smiles } : null))}
+            fileBaseName={`${d.target_id}_screen`}
+            open={interactionsOpen}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+/** A GENE_<symbol> target has no QSAR model, so "Run screen" degrades to a
+    plain docking run — reuses the Docking tab's own result shape/rendering
+    rather than a hardcoded id, matching the original app's routing. */
+function GeneOnlyDockResults({
+  results,
+  receptorPdbPath,
+  targetId,
+  advanced,
+  caveat,
+  jobId,
+}: {
+  results: DockResultRow[];
+  receptorPdbPath: string | null;
+  targetId: string;
+  advanced: AdvancedDockingBody | null;
+  caveat: string | null;
+  jobId?: string;
+}) {
+  const [openRows, setOpenRows] = useState<Set<number>>(new Set());
+  const [interactionsOpen, setInteractionsOpen] = useState(false);
+  const toggle = (i: number) =>
+    setOpenRows((s) => {
+      const n = new Set(s);
+      n.has(i) ? n.delete(i) : n.add(i);
+      return n;
+    });
+  return (
+    <div>
+      {caveat && <Notice>{caveat}</Notice>}
+      <div className="max-h-[calc(100vh-260px)] overflow-auto">
+        <table className="w-full border-collapse text-[13px]">
+          <thead>
+            <tr>
+              {["", "Compound", "Confidence", "Vina affinity (kcal/mol)", "Status", "Fresh decoy check"].map((h) => (
+                <th key={h} className="sticky top-0 z-10 border-b border-line bg-surface2 px-3 py-2.5 text-left text-[10.5px] font-semibold uppercase tracking-wide text-inkmut">
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {results.map((r, i) => {
+              const hasDetail = !!r.interaction_png || r.status === "ok" || !!r.suggested_action;
+              const open = openRows.has(i);
+              return (
+                <Fragment key={i}>
+                  <tr className={hasDetail ? "cursor-pointer hover:bg-canvas" : ""} onClick={() => hasDetail && toggle(i)}>
+                    <td className="border-b border-surface2 px-3 py-2.5 text-brand-600">{hasDetail ? (open ? "▾" : "▸") : ""}</td>
+                    <td className="smi-mono border-b border-surface2 px-3 py-2.5" title={r.smiles}>{r.smiles}</td>
+                    <td className="border-b border-surface2 px-3 py-2.5">
+                      <span className="chip">
+                        <ConfidenceDot level={r.confidence} />
+                        {r.confidence || "—"}
+                      </span>
+                    </td>
+                    <td className="border-b border-surface2 px-3 py-2.5">{r.vina_score ?? "—"}</td>
+                    <td className="border-b border-surface2 px-3 py-2.5 text-inkmut">{r.status === "ok" ? `${r.n_valid} valid pose(s)` : r.reason || r.status}</td>
+                    <td className="border-b border-surface2 px-3 py-2.5">
+                      {r.status === "ok" ? (
+                        <FreshDecoyButton smiles={r.smiles} targetId={targetId} advanced={advanced} parentKind="docking" parentJobId={jobId} />
+                      ) : (
+                        <span className="text-inkmut">—</span>
+                      )}
+                    </td>
+                  </tr>
+                  {hasDetail && open && (
+                    <tr>
+                      <td className="border-b border-surface2" />
+                      <td colSpan={20} className="border-b border-surface2 p-0">
+                        <DockDetailPanel r={r} receptorPdbPath={receptorPdbPath} jobId={jobId} reportKind="docking" />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {jobId && (
+        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2.5 border-t border-line px-5 py-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <InteractionTableToggle results={results} open={interactionsOpen} onToggle={() => setInteractionsOpen((o) => !o)} />
+          </div>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <span className="text-[10.5px] font-semibold uppercase tracking-wide text-inkmut">Export</span>
+            <a className="btn-link" href={api.dockingFailureLogUrl(jobId)} download>
+              <DownloadIcon className="h-3.5 w-3.5" />
+              Failure log (.csv)
+            </a>
+            <a className="btn-link" href={api.dockingExportPackageUrl(jobId)} download>
+              <DownloadIcon className="h-3.5 w-3.5" />
+              Full experiment package (.zip)
+            </a>
+          </div>
+        </div>
+      )}
+      <InteractionLogTable results={results} fileBaseName={`${targetId}_screen`} open={interactionsOpen} />
+    </div>
+  );
+}

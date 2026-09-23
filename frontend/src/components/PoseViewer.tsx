@@ -1,0 +1,136 @@
+import { useEffect, useRef, useState } from "react";
+import { applyProteinStyle, clearSurfaces, fetchTextCached, get3Dmol, type ProteinStyle } from "../lib/mol3d";
+import { apiUrl } from "../lib/api";
+import { StyleSelect } from "./StyleSelect";
+import { Modal } from "./Modal";
+import { CubeIcon } from "./Icons";
+
+export function PoseViewer({
+  posePdb,
+  receptorPdbPath,
+  interactions,
+}: {
+  posePdb?: string | null;
+  receptorPdbPath?: string | null;
+  interactions?: { residue?: string }[];
+}) {
+  const [show, setShow] = useState(false);
+  const [spin, setSpin] = useState(false);
+  const [style, setStyle] = useState<ProteinStyle>("cartoon");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const viewerRef = useRef<any>(null);
+  const ligIdxRef = useRef(0);
+  const [hasReceptor, setHasReceptor] = useState(false);
+  const resiListRef = useRef<number[]>([]);
+  const surfaceIdsRef = useRef<number[]>([]);
+  const initedRef = useRef(false);
+
+  const applyReceptorLook = (viewer: any, s: ProteinStyle) => {
+    surfaceIdsRef.current = clearSurfaces(viewer, surfaceIdsRef.current);
+    applyProteinStyle(viewer, { model: 0 }, s, (ids) => (surfaceIdsRef.current = ids));
+    if (s === "cartoon") viewer.setStyle({ model: 0 }, { cartoon: { color: "lightgrey", opacity: 0.55 } });
+    if (resiListRef.current.length) viewer.addStyle({ model: 0, resi: resiListRef.current }, { stick: { radius: 0.12, colorscheme: "grayCarbon" } });
+  };
+
+  useEffect(() => {
+    if (!show) {
+      // The Modal (and its containerRef div) unmounts whenever `show` goes
+      // false — resetting this flag is what lets the NEXT open
+      // re-initialize into the freshly remounted (empty) container,
+      // instead of the effect no-opping because "already initialized once"
+      // and leaving that new container permanently blank (worked the
+      // first time, stayed blank on every reopen after).
+      initedRef.current = false;
+      return;
+    }
+    if (initedRef.current) return;
+    initedRef.current = true;
+    (async () => {
+      const $3Dmol = get3Dmol();
+      if (!$3Dmol || !containerRef.current || !posePdb) {
+        if (containerRef.current)
+          containerRef.current.innerHTML = '<div style="padding:10px" class="text-inkmut text-sm">3D pose not available.</div>';
+        return;
+      }
+      const receptorPdb = receptorPdbPath ? await fetchTextCached(apiUrl(`/api/docking/receptor_file?path=${encodeURIComponent(receptorPdbPath)}`)) : null;
+      if (!containerRef.current) return;
+      const viewer = $3Dmol.createViewer(containerRef.current, { backgroundColor: "white" });
+      viewerRef.current = viewer;
+      setHasReceptor(!!receptorPdb);
+      if (receptorPdb) {
+        viewer.addModel(receptorPdb, "pdb");
+        resiListRef.current = [
+          ...new Set(
+            (interactions || [])
+              .map((h) => {
+                const m = (h.residue || "").match(/(\d+)$/);
+                return m ? parseInt(m[1]) : null;
+              })
+              .filter((n): n is number => n != null)
+          ),
+        ];
+        applyReceptorLook(viewer, style);
+      }
+      viewer.addModel(posePdb, "pdb");
+      const ligIdx = receptorPdb ? 1 : 0;
+      ligIdxRef.current = ligIdx;
+      viewer.setStyle({ model: ligIdx }, { stick: { radius: 0.16 }, sphere: { scale: 0.25 } });
+      viewer.zoomTo({ model: ligIdx });
+      viewer.render();
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [show, posePdb, receptorPdbPath, interactions]);
+
+  useEffect(() => {
+    viewerRef.current?.spin(spin ? "y" : false);
+  }, [spin]);
+
+  // Style-only change: reapply on the already-loaded receptor model
+  // (including the pocket-residue stick overlay, which layers on top of
+  // whatever the base style is).
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || !hasReceptor) return;
+    applyReceptorLook(viewer, style);
+    viewer.render();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [style, hasReceptor]);
+
+  return (
+    <>
+      <button type="button" className="btn-link" onClick={() => setShow(true)}>
+        <CubeIcon className="h-3.5 w-3.5" />
+        View 3D pose
+      </button>
+      {show && (
+        <Modal title="3D pose" sub="Ball-and-stick, hydrogens included" onClose={() => setShow(false)}>
+          <div className="flex h-full flex-col p-3.5">
+            <div className="mb-2.5 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="btn-link"
+                onClick={() => {
+                  const v = viewerRef.current;
+                  if (!v) return;
+                  v.zoomTo({ model: ligIdxRef.current });
+                  v.render();
+                }}
+              >
+                Reset view
+              </button>
+              <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-inkmut">
+                <input type="checkbox" checked={spin} onChange={(e) => setSpin(e.target.checked)} />
+                spin
+              </label>
+              {hasReceptor && <StyleSelect value={style} onChange={setStyle} />}
+              <span className="text-[11px] text-inkmut">
+                All atoms shown incl. hydrogens (nonpolar H positions are geometry-estimated, not Vina's own placement).
+              </span>
+            </div>
+            <div ref={containerRef} className="relative w-full flex-1 rounded-lg border border-line bg-white" />
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}

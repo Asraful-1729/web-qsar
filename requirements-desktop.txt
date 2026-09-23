@@ -1,0 +1,5 @@
+# Desktop-conversion-only dependency, on top of backend/requirements.txt.
+# Kept as a SEPARATE file rather than added to backend/requirements.txt so
+# the plain web deployment's install (`pip install -r backend/requirements.txt`)
+# is completely untouched by the desktop conversion.
+pywebview==6.2.1

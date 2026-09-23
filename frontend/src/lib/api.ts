@@ -1,0 +1,284 @@
+import type {
+  AdmetResponse,
+  AdvancedDockingBody,
+  BindingSiteResponse,
+  BucketFile,
+  CompareResponse,
+  CuratedCompoundSuggestion,
+  DiseaseSummary,
+  DiseaseTarget,
+  DockJobStatus,
+  DockingStatus,
+  DownloadJobStatus,
+  DownloadStartResponse,
+  DownloadsStatus,
+  EnrichmentRunSettings,
+  PredictResponse,
+  SimilarityResult,
+  TargetFishingResult,
+  TargetPredictionV2Result,
+  ResearchReportResponse,
+  ReceptorProfile,
+  AlternateLigand,
+  AlternateLigandsResponse,
+  RecommendationResponse,
+  ScreenJobStatus,
+  StructureCandidatesResponse,
+  TargetMeta,
+  PdbLigandsJobStatus,
+} from "./types";
+
+class ApiError extends Error {}
+
+/** Backend base URL. Empty string keeps requests relative — fine for `npm
+    run dev`'s Vite proxy (see vite.config.ts) or a same-origin deployment
+    behind a reverse proxy. Set VITE_API_BASE at build time (e.g.
+    `VITE_API_BASE=http://localhost:8000 npm run build`) to talk to a
+    backend running as its own separate service/origin; the backend's CORS
+    (see backend/app.py's ALLOWED_ORIGINS) must allow the frontend's origin
+    for that to work. */
+export const API_BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
+export const apiUrl = (path: string) => `${API_BASE}${path}`;
+
+async function api<T>(path: string, opts?: RequestInit): Promise<T> {
+  const res = await fetch(apiUrl(path), opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiError(data.detail || "Error");
+  return data as T;
+}
+
+const json = (body: unknown): RequestInit => ({
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Wraps one poll-loop request with retries for TRANSIENT network failures
+    (a dropped SSH tunnel hop, a brief wifi blip) — long-running jobs (Screen,
+    Docking, Fresh Decoy Validation) poll every couple seconds for anywhere
+    from tens of seconds to tens of minutes, and over that span a single
+    fetch() rejecting outright ("Failed to fetch") used to kill the whole
+    operation on the very first hiccup. Retries a few times with backoff
+    before finally propagating — a REAL failure (job genuinely gone, server
+    down) still surfaces, just not on the first transient blip. Only wraps
+    the polling GET, never the initiating POST (that one should fail fast —
+    it's a direct user action, not a long background wait). */
+export async function pollRetry<T>(fn: () => Promise<T>, retries = 4, delayMs = 3000): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (i < retries) await sleep(delayMs);
+    }
+  }
+  throw lastErr;
+}
+
+// ---------- shared ----------
+export const health = () =>
+  api<{ targets_in_bucket_dir: number; admet_ai: boolean; docking: string; disclaimer: string }>("/api/health");
+export const listTargets = () => api<{ targets: TargetMeta[] }>("/api/targets");
+export const listDiseases = () => api<{ diseases: DiseaseSummary[] }>("/api/diseases");
+export const targetsForDisease = (diseaseId: string) =>
+  api<{ targets: DiseaseTarget[] }>(`/api/diseases/${encodeURIComponent(diseaseId)}/targets`);
+export const parseSdf = async (file: File): Promise<{ smiles: string[] }> => {
+  const fd = new FormData();
+  fd.append("file", file);
+  return api("/api/parse_sdf", { method: "POST", body: fd });
+};
+
+// ---------- predict ----------
+export const predict = (target_id: string, smiles: string[]) =>
+  api<PredictResponse>("/api/predict", json({ target_id, smiles }));
+
+// ---------- admet ----------
+export const admet = (smiles: string[]) => api<AdmetResponse>("/api/admet", json({ target_id: "_", smiles }));
+export const admetJob = (jid: string) => api<AdmetResponse>(`/api/admet/job/${jid}`);
+
+// ---------- compare ----------
+export const predictMulti = (smiles: string[], target_ids: string[]) =>
+  api<CompareResponse>("/api/predict_multi", json({ smiles, target_ids }));
+
+// ---------- target recommendation / info ----------
+export const targetRecommendation = (targetId: string) =>
+  api<RecommendationResponse>(`/api/targets/${targetId}/recommendation`);
+export const factoryMetrics = (targetId: string) =>
+  api<{ target_id: string; metrics: Record<string, any> }>(`/api/factory/target/${targetId}/metrics`);
+export const factoryBucket = (targetId: string) =>
+  api<{ target_id: string; n_files: number; files: BucketFile[] }>(`/api/factory/bucket/${targetId}`);
+
+// ---------- docking status / registry ----------
+export const dockingStatus = () => api<DockingStatus>("/api/docking/status");
+
+// ---------- binding site / structures ----------
+export const bindingSite = (targetId: string) => api<BindingSiteResponse>(`/api/targets/${targetId}/binding_site`);
+export const structureCandidates = (targetId: string) =>
+  api<StructureCandidatesResponse>(
+    targetId.startsWith("GENE_")
+      ? `/api/genes/${encodeURIComponent(targetId.slice(5))}/structure_candidates`
+      : `/api/targets/${targetId}/structure_candidates`
+  );
+export const boxFromResidues = (body: {
+  target_id: string;
+  residues: { chain: string; resnum: number }[];
+  receptor_pdb?: string | null;
+  padding?: number;
+}) => api<{ center: [number, number, number]; box_size: [number, number, number] }>("/api/docking/box_from_residues", json(body));
+
+export const receptorFile = (path: string) =>
+  fetch(apiUrl(`/api/docking/receptor_file?path=${encodeURIComponent(path)}`)).then((r) => r.text());
+export const receptorForTarget = (targetId: string) =>
+  fetch(apiUrl(`/api/docking/receptor/${targetId}`)).then((r) => r.text());
+export const referenceLigandSdf = (targetId: string) =>
+  fetch(apiUrl(`/api/targets/${targetId}/reference_ligand.sdf`)).then((r) => r.text());
+
+// ---------- co-crystallized ligand listing (async job) ----------
+// Every real ligand in a PDB entry, so the user picks which one to build a
+// receptor/box around — no automatic "main ligand" selection any more.
+export const listPdbLigands = (pdb_id: string) => api<{ job_id: string }>("/api/docking/pdb_ligands", json({ pdb_id }));
+export const pdbLigandsJob = (jid: string) => api<PdbLigandsJobStatus>(`/api/docking/pdb_ligands/job/${jid}`);
+
+// ---------- custom receptor (async job) ----------
+export const submitCustomReceptor = (body: { target_id: string; pdb_id: string; chain?: string | null; ligand_resname?: string | null }) =>
+  api<{ job_id: string }>("/api/docking/receptor/custom", json(body));
+export const customReceptorJob = (jid: string) =>
+  api<{ status: string; step?: string | null; profile?: ReceptorProfile; error?: string }>(`/api/docking/receptor/custom/job/${jid}`);
+
+// ---------- docking submit / poll ----------
+export const submitDocking = (target_id: string, smiles: string[], advanced: AdvancedDockingBody | null, plant_source?: string | null) =>
+  api<{ job_id: string; total: number; caveat?: string | null; pdb_source?: string | null }>(
+    "/api/docking/submit",
+    json({ target_id, smiles, advanced, plant_source: plant_source || null })
+  );
+export const dockingJob = (jid: string) => api<DockJobStatus>(`/api/docking/job/${jid}`);
+export const cancelDocking = (jid: string) => api<{ ok: boolean }>(`/api/docking/cancel/${jid}`, { method: "POST" });
+
+// ---------- fresh decoy validation ----------
+export const submitFreshDecoy = (
+  target_id: string,
+  smiles: string,
+  advanced: AdvancedDockingBody | null,
+  parent?: { kind: "docking" | "screen"; jobId: string } | null
+) =>
+  api<{ job_id: string }>(
+    "/api/docking/enrichment/fresh",
+    json({ target_id, smiles, advanced, parent_kind: parent?.kind, parent_job_id: parent?.jobId })
+  );
+export const cancelFreshDecoy = (jid: string) =>
+  api<{ ok: boolean }>(`/api/docking/enrichment/fresh/cancel/${jid}`, { method: "POST" });
+export const freshDecoyJob = (jid: string) =>
+  api<{
+    status: string;
+    done: number;
+    total: number;
+    error?: string;
+    result?: {
+      error?: string;
+      percentile: number;
+      discrimination: string;
+      compound_score: number;
+      n_decoys_docked: number;
+      n_decoys_failed?: number;
+      decoy_stats?: { mean: number; median: number; sd: number; min: number; max: number } | null;
+      run_settings?: EnrichmentRunSettings;
+    };
+  }>(`/api/docking/enrichment/fresh/job/${jid}`);
+
+// ---------- screen pipeline ----------
+export const submitScreen = (target_id: string, smiles: string[], advanced: AdvancedDockingBody | null, plant_source?: string | null) =>
+  api<{ job_id: string }>("/api/screen/submit", json({ target_id, smiles, advanced, plant_source: plant_source || null }));
+export const screenJob = (jid: string) => api<ScreenJobStatus>(`/api/screen/job/${jid}`);
+export const cancelScreen = (jid: string) => api<{ ok: boolean }>(`/api/screen/cancel/${jid}`, { method: "POST" });
+export const screenExportUrl = (jid: string) => apiUrl(`/api/screen/job/${jid}/export.csv`);
+export const screenExportPackageUrl = (jid: string) => apiUrl(`/api/screen/job/${jid}/export_package`);
+export const dockingExportPackageUrl = (jid: string) => apiUrl(`/api/docking/job/${jid}/export_package`);
+export const dockingFailureLogUrl = (jid: string) => apiUrl(`/api/docking/job/${jid}/failure_log`);
+export const screenFailureLogUrl = (jid: string) => apiUrl(`/api/screen/job/${jid}/failure_log`);
+
+// ---------- A6: "Reproduce this analysis" ----------
+export const reproduceDocking = (jid: string) =>
+  api<{ job_id: string; total: number; caveat?: string | null; pdb_source?: string | null }>(
+    `/api/docking/job/${jid}/reproduce`,
+    { method: "POST" }
+  );
+export const reproduceScreen = (jid: string) => api<{ job_id: string }>(`/api/screen/job/${jid}/reproduce`, { method: "POST" });
+
+// ---------- dock again with a different co-crystallized ligand ----------
+export const dockingAlternateLigands = (jid: string) => api<AlternateLigandsResponse>(`/api/docking/job/${jid}/alternate_ligands`);
+export const screenAlternateLigands = (jid: string) => api<AlternateLigandsResponse>(`/api/screen/job/${jid}/alternate_ligands`);
+const alternateLigandBuild = (kind: "docking" | "screen", jid: string, lig: AlternateLigand) =>
+  api<{ job_id: string }>(`/api/${kind}/job/${jid}/alternate_ligand/build`, json({ resname: lig.resname, chain: lig.chain, resnum: lig.resnum }));
+export const dockingAlternateLigandBuild = (jid: string, lig: AlternateLigand) => alternateLigandBuild("docking", jid, lig);
+export const screenAlternateLigandBuild = (jid: string, lig: AlternateLigand) => alternateLigandBuild("screen", jid, lig);
+const alternateLigandSubmit = (kind: "docking" | "screen", jid: string, profile: ReceptorProfile) =>
+  api<{ job_id: string; total?: number; caveat?: string | null; pdb_source?: string | null }>(
+    `/api/${kind}/job/${jid}/alternate_ligand/submit`,
+    json({ profile })
+  );
+export const dockingAlternateLigandSubmit = (jid: string, profile: ReceptorProfile) => alternateLigandSubmit("docking", jid, profile);
+export const screenAlternateLigandSubmit = (jid: string, profile: ReceptorProfile) => alternateLigandSubmit("screen", jid, profile);
+
+// ---------- on-demand downloads ----------
+export const downloadsStatus = () => api<DownloadsStatus>("/api/downloads/status");
+export const cancelDownload = (jobId: string) => api<{ ok: boolean }>(`/api/downloads/cancel/${jobId}`, { method: "POST" });
+export const startDownload = (targetId: string, kind: "model" | "docking") =>
+  api<DownloadStartResponse>(`/api/downloads/target/${encodeURIComponent(targetId)}?kind=${kind}`, { method: "POST" });
+export const downloadProgress = (jobId: string) => api<DownloadJobStatus>(`/api/downloads/progress/${jobId}`);
+
+/** Starts (or no-ops if already installed) one target/kind download and
+    polls it to completion — the one poll-loop implementation shared by
+    the Downloads tab and the target pickers' inline auto-download, so
+    there's a single place that knows how to drive a download job. */
+export async function ensureDownloaded(
+  targetId: string,
+  kind: "model" | "docking",
+  onProgress?: (p: DownloadJobStatus) => void,
+  onJobId?: (jobId: string) => void
+): Promise<void> {
+  const start = await startDownload(targetId, kind);
+  if (!start.job_id) return; // already installed
+  const jobId = start.job_id;
+  onJobId?.(jobId);
+  while (true) {
+    await sleep(700);
+    const p = await pollRetry(() => downloadProgress(jobId));
+    onProgress?.(p);
+    if (p.state === "done") return;
+    if (p.state === "cancelled") throw new ApiError("Stopped by user.");
+    if (p.state === "error") throw new ApiError(p.error || `Download failed for ${targetId} (${kind}).`);
+  }
+}
+
+// ---------- A3: natural-product similarity search ----------
+export const similarityStatus = () => api<{ available: boolean; download_base_url: string }>("/api/similarity/status");
+export const similarityDownloadStart = () => api<{ job_id: string | null; already_installed?: boolean }>("/api/similarity/download", { method: "POST" });
+export const similarityDownloadProgress = (jid: string) =>
+  api<{ state: string; done: number; total: number; error?: string | null }>(`/api/similarity/download/progress/${jid}`);
+export const similarityDownloadCancel = (jid: string) => api<{ ok: boolean }>(`/api/similarity/download/cancel/${jid}`, { method: "POST" });
+export const similaritySearch = (smiles: string, threshold = 0.4, top_n = 50) =>
+  api<SimilarityResult>("/api/similarity/search", json({ smiles, threshold, top_n }));
+
+// ---------- A2: compound -> target prediction ----------
+export const targetFishingStatus = () => api<{ available: boolean }>("/api/target_fishing/status");
+export const targetFishingSearch = (smiles: string, threshold = 0.4) =>
+  api<TargetFishingResult>("/api/target_fishing/search", json({ smiles, threshold }));
+export const suggestCuratedCompounds = (q: string, limit = 8) =>
+  api<{ results: CuratedCompoundSuggestion[] }>(`/api/target_fishing/suggest_compounds?q=${encodeURIComponent(q)}&limit=${limit}`);
+
+// ---------- A2v2: Target Prediction v2 (density-adaptive, independently validated) ----------
+export const targetPredictionV2Status = () => api<{ available: boolean }>("/api/target_prediction_v2/status");
+// Default requests every matched target, not just a top slice — the
+// backend caps at 10,000 (above n_targets_indexed, ~4,882) so this is
+// effectively "all", not an arbitrary large-but-still-truncating number.
+export const targetPredictionV2Predict = (smiles: string, top_k = 10000) =>
+  api<TargetPredictionV2Result>("/api/target_prediction_v2/predict", json({ smiles, top_k }));
+
+// ---------- A5: research story generator ----------
+export const researchReport = (kind: "docking" | "screen", jobId: string, smiles: string, includeLiterature = true) =>
+  api<ResearchReportResponse>(`/api/${kind}/job/${jobId}/research_report`, json({ smiles, include_literature: includeLiterature }));
+
+export { ApiError };

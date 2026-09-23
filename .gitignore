@@ -1,0 +1,69 @@
+__pycache__/
+*.pyc
+*.log
+.venv/
+*.egg-info/
+.claude/
+
+# per-target model/docking buckets — downloaded on demand at runtime
+# (see backend/downloads.py), not source code. models/curated/ is the
+# one exception: small (~15MB) curated-compound data bundled with the
+# app for fresh/on-demand decoy generation.
+models/*
+!models/curated
+docking_targets/
+
+docking_registry.json.bak.*
+docking_registry.json.lock
+
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/.env.local
+frontend/.env.*.local
+
+# target_prediction_v2: data/ and results/ under every phase are
+# regenerable pipeline outputs (raw ChEMBL fetches, captured eval
+# samples, intermediate results), not source -- every .py/.md (code +
+# the full documentation trail) stays. v2_index/ and orthologue_index/
+# are the exception: they're data too, but unlike models/docking_targets
+# there's no on-demand-download bucket for them, and losing them means
+# the whole target_prediction_v2 feature needs a multi-day ChEMBL
+# rebuild to restore -- so those two ARE committed (via Git LFS, see
+# .gitattributes; both binary files well past the useful-as-a-plain-diff
+# size anyway).
+target_prediction_v2/**/data/
+target_prediction_v2/**/results/
+target_prediction_v2/**/*.log
+
+# Desktop-build staging copy of target_prediction_v2/phase2/v2_index +
+# phase3/orthologue_index + phase2/data/target_name_map.json --
+# regenerated at build time (see BUILD_WINDOWS.md), not a distinct
+# source artifact from the copies already tracked above.
+target_prediction_v2_data/
+
+# Internal planning documents with restrictive (600) file permissions,
+# unlike everything else in this project -- a real signal they weren't
+# meant to be shared even in a private repo. Excluded from the initial
+# push; remove this line if that reading was wrong.
+target_prediction_v2_procedure_rev*.md
+
+# COCONUT-derived natural-product similarity index -- already has its
+# own on-demand download (/api/similarity/download, see
+# backend/similarity.py) from the same R2 bucket as models/docking_targets.
+similarity_index/
+
+# Generated cache, not source -- rebuilds automatically from
+# models/curated/*.csv on first use (see backend/scripts/generate_decoys.py).
+backend/scripts/_decoy_pool_cache.pkl
+
+# Stale timestamped backups from manual edits during development (the
+# dash before the timestamp doesn't match the older `.bak.*` rule above
+# -- this one actually catches them).
+docking_registry.json.bak-*
+
+# Build/runtime artifacts
+frontend.tar.gz
+backend.log
+frontend.log
+gnina_download.log

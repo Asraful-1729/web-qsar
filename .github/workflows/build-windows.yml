@@ -1,0 +1,284 @@
+name: Build Windows installer
+
+# PyInstaller doesn't cross-compile, so the .exe can only be produced by an
+# actual Windows build — this runs the whole BUILD_WINDOWS.md flow on a
+# GitHub-hosted windows-latest runner and hands back an installer, so a
+# real Windows machine is never required to produce one. See
+# BUILD_WINDOWS.md for the equivalent manual steps.
+#
+# Adapted from the sibling qsar-desktop project's own working CI (same
+# verification depth — a real predict/ADMET/download run, not just "did
+# it start"), plus this project's two new pieces: target_prediction_v2's
+# bundled data, and the REMOTE_GNINA_URL/TOKEN substitution (GNINA has no
+# official Windows build — see BUILD_WINDOWS.md).
+#
+# NOT YET WIRED UP: this project isn't a git repository yet, so this
+# workflow can't actually run anywhere until that's set up (git init +
+# a GitHub remote) — see BUILD_WINDOWS.md for the manual, non-CI path in
+# the meantime.
+#
+# Repo variables (Settings > Secrets and variables > Actions > Variables):
+#   DOWNLOAD_BASE_URL  optional — public HTTPS URL, see backend/downloads.py
+#   REMOTE_GNINA_URL   optional — e.g. https://your-gpu-server:8300
+# Repo secret:
+#   REMOTE_GNINA_TOKEN optional — matches the token set on that server
+#     (a real secret, unlike the two URLs above — use Secrets, not Variables)
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*.*.*"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install backend + desktop dependencies (CPU-only torch first)
+        shell: bash
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r backend/requirements.txt
+          pip install -r requirements-desktop.txt
+          pip install pyinstaller
+
+      - name: Build frontend
+        working-directory: frontend
+        shell: bash
+        run: |
+          npm ci
+          npm run build
+
+      - name: Determine version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-dev.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: PyInstaller (see BUILD_WINDOWS.md for what each flag is for)
+        run: >
+          pyinstaller --noconfirm --windowed --name PhytoScreen
+          --paths backend
+          --add-data "frontend/dist;frontend/dist"
+          --add-data "docking_registry.json;."
+          --add-data "panel_results_v2.csv;."
+          --add-data "models/curated;models/curated"
+          --add-data "target_prediction_v2_data;target_prediction_v2_data"
+          --add-data "bin;bin"
+          --collect-all rdkit
+          --collect-all autogluon
+          --collect-all chemprop
+          --collect-all lightning
+          --collect-all posebusters
+          --collect-all meeko
+          --collect-all gemmi
+          --collect-all webview
+          --collect-all admet_ai
+          --collect-all cuik_molmaker
+          --collect-all openmm
+          --collect-all pdbfixer
+          --collect-all lightgbm
+          --collect-all catboost
+          --collect-data xgboost
+          --hidden-import xgboost
+          --hidden-import uvicorn
+          --hidden-import desktop_remote_gnina
+          desktop.py
+
+      - name: Sanity-check the bundle isn't near-empty
+        shell: bash
+        run: |
+          size_bytes=$(du -sb dist/PhytoScreen | cut -f1)
+          size_mb=$((size_bytes / 1024 / 1024))
+          echo "dist/PhytoScreen is ${size_mb} MB"
+          if [ "$size_mb" -lt 200 ]; then
+            echo "::error::dist/PhytoScreen is only ${size_mb} MB — a real build with torch/rdkit/autogluon/chemprop should be hundreds of MB+. Check earlier step logs for ERROR lines."
+            exit 1
+          fi
+
+          curated_count=$(find dist/PhytoScreen -path "*/models/curated/*.csv" | wc -l)
+          echo "Bundled models/curated/ CSVs: ${curated_count}"
+          if [ "$curated_count" -lt 1 ]; then
+            echo "::error::No models/curated/*.csv files in the bundle — decoy generation's compound pool will be empty."
+            exit 1
+          fi
+
+          v2_index_found=$(find dist/PhytoScreen -path "*/target_prediction_v2_data/v2_index/compounds.csv.gz" | wc -l)
+          echo "Bundled target_prediction_v2_data/v2_index: ${v2_index_found}"
+          if [ "$v2_index_found" -lt 1 ]; then
+            echo "::error::target_prediction_v2_data/v2_index/compounds.csv.gz not found in the bundle — Target Prediction v2 will report unavailable. Check the --add-data \"target_prediction_v2_data;target_prediction_v2_data\" entry."
+            exit 1
+          fi
+
+      - name: Verify the built exe actually WORKS (not just starts)
+        # Same depth as qsar-desktop's own CI: a real predict, real ADMET,
+        # real download, plus (new here) a real Target Prediction v2 call
+        # and a docking-status check that specifically expects vina=true,
+        # gnina=false (no local Windows binary — remote-only, and this
+        # step doesn't configure REMOTE_GNINA_URL, so it should report
+        # exactly the same as the plain "no GNINA" case, never crash).
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $logPath = Join-Path $env:LOCALAPPDATA "PhytoScreen\desktop.log"
+          if (Test-Path $logPath) { Remove-Item $logPath -Force }
+          $proc = Start-Process -FilePath "dist\PhytoScreen\PhytoScreen.exe" -PassThru
+          $port = $null
+          for ($i = 0; $i -lt 60; $i++) {
+            Start-Sleep -Seconds 1
+            if (Test-Path $logPath) {
+              $content = Get-Content $logPath -Raw
+              if ($content -match "backend built OK, starting uvicorn on port (\d+)") { $port = $Matches[1] }
+              if ($content -match "backend is up, serving") { break }
+              if ($content -match "FATAL") { break }
+            }
+          }
+          function Fail($msg) {
+            Write-Host "--- desktop.log ---"
+            if (Test-Path $logPath) { Get-Content $logPath } else { Write-Host "(never created)" }
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            Write-Error $msg
+            exit 1
+          }
+          if (-not $port) { Fail "Backend never reported its port within 60s — see the log above." }
+          $base = "http://127.0.0.1:$port"
+
+          $healthOk = $false
+          for ($i = 0; $i -lt 5; $i++) {
+            try { Invoke-RestMethod "$base/api/health" -TimeoutSec 10 | Out-Null; $healthOk = $true; break }
+            catch { Start-Sleep -Seconds 2 }
+          }
+          if (-not $healthOk) { Fail "GET /api/health failed after 5 attempts." }
+
+          try {
+            $mlBackends = Invoke-RestMethod "$base/api/health/ml_backends" -TimeoutSec 10
+          } catch { Fail "GET /api/health/ml_backends failed: $_" }
+          foreach ($lib in @("xgboost", "lightgbm", "catboost")) {
+            if (-not $mlBackends.$lib.ok) { Fail "Native library check failed for '$lib': $($mlBackends.$lib.error)" }
+          }
+
+          try {
+            $job = Invoke-RestMethod -Method Post "$base/api/downloads/target/CHEMBL1951_MAOA?kind=model" -TimeoutSec 15
+          } catch { Fail "POST /api/downloads/target failed: $_" }
+          if ($job.job_id) {
+            $done = $false
+            for ($i = 0; $i -lt 90; $i++) {
+              Start-Sleep -Seconds 1
+              try { $p = Invoke-RestMethod "$base/api/downloads/progress/$($job.job_id)" -TimeoutSec 10 }
+              catch { continue }
+              if ($p.state -eq "done") { $done = $true; break }
+              if ($p.state -eq "error") { Fail "Model download failed: $($p.error)" }
+            }
+            if (-not $done) { Fail "Model download never finished within 90s." }
+          }
+
+          try {
+            $pred = Invoke-RestMethod -Method Post "$base/api/predict" -TimeoutSec 60 `
+              -ContentType "application/json" -Body '{"target_id":"CHEMBL1951_MAOA","smiles":["CCO"]}'
+          } catch { Fail "POST /api/predict threw: $_" }
+          if (-not $pred.in_domain -or $pred.in_domain.Count -eq 0 -or $null -eq $pred.in_domain[0].predicted_pIC50) {
+            Fail "predict() ran but returned no usable prediction: $($pred | ConvertTo-Json -Depth 5)"
+          }
+          Write-Host "Predict OK: pIC50=$($pred.in_domain[0].predicted_pIC50)"
+
+          try {
+            $admet = Invoke-RestMethod -Method Post "$base/api/admet" -TimeoutSec 30 `
+              -ContentType "application/json" -Body '{"target_id":"_","smiles":["CCO"]}'
+          } catch { Fail "POST /api/admet threw: $_" }
+          $learned = $admet.profiles[0].learned
+          if (-not $learned.available) {
+            Fail "ADMET-AI worker's learned layer is unavailable: $($learned.note)"
+          }
+          Write-Host "ADMET-AI worker OK: learned layer available."
+
+          try { $diseases = Invoke-RestMethod "$base/api/diseases" -TimeoutSec 10 }
+          catch { Fail "GET /api/diseases threw: $_" }
+          if (-not $diseases.diseases -or $diseases.diseases.Count -eq 0) {
+            Fail "GET /api/diseases returned zero diseases — panel_results_v2.csv likely isn't resolving in this frozen build."
+          }
+          Write-Host "Diseases OK: $($diseases.diseases.Count) diseases."
+
+          try { $dockStatus = Invoke-RestMethod "$base/api/docking/status" -TimeoutSec 10 }
+          catch { Fail "GET /api/docking/status threw: $_" }
+          if (-not $dockStatus.target_details -or $dockStatus.target_details.Count -eq 0) {
+            Fail "GET /api/docking/status returned zero target_details — docking_registry.json likely isn't resolving in this frozen build."
+          }
+          Write-Host "Docking registry OK: $($dockStatus.target_details.Count) targets."
+          if (-not $dockStatus.binaries.vina) { Fail "vina not detected — bin\vina.exe missing from the build?" }
+          Write-Host "Vina OK. gnina locally available: $($dockStatus.binaries.gnina) (expected false here -- REMOTE_GNINA_URL isn't configured in this CI run)."
+
+          try {
+            $tpv2 = Invoke-RestMethod -Method Post "$base/api/target_prediction_v2/predict" -TimeoutSec 60 `
+              -ContentType "application/json" -Body '{"smiles":"CC(=O)Oc1ccccc1C(=O)O","top_k":5}'
+          } catch { Fail "POST /api/target_prediction_v2/predict threw: $_" }
+          if (-not $tpv2.results -or $tpv2.results.Count -eq 0) {
+            Fail "target_prediction_v2/predict ran but returned zero results — target_prediction_v2_data likely isn't resolving in this frozen build."
+          }
+          Write-Host "Target Prediction v2 OK: $($tpv2.results.Count) targets ranked, regime=$($tpv2.regime)."
+
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          Write-Host "Full end-to-end verification passed."
+
+      - name: Fill in launcher placeholders (DOWNLOAD_BASE_URL / REMOTE_GNINA_*)
+        # Same pattern for all three: an unset value drops its `set ...=`
+        # line entirely (not "set it to empty string", which would
+        # override backend/downloads.py's/desktop_remote_gnina.py's own
+        # code-level defaults with a blocking empty value instead of
+        # leaving them unset).
+        shell: pwsh
+        env:
+          DOWNLOAD_BASE_URL: ${{ vars.DOWNLOAD_BASE_URL }}
+          REMOTE_GNINA_URL: ${{ vars.REMOTE_GNINA_URL }}
+          REMOTE_GNINA_TOKEN: ${{ secrets.REMOTE_GNINA_TOKEN }}
+        run: |
+          $lines = Get-Content installer/PhytoScreen.bat
+          if ($env:DOWNLOAD_BASE_URL) {
+            $lines = $lines -replace '__DOWNLOAD_BASE_URL__', $env:DOWNLOAD_BASE_URL
+          } else {
+            Write-Host "DOWNLOAD_BASE_URL unset -- using backend/downloads.py's built-in default bucket."
+            $lines = $lines | Where-Object { $_ -notmatch '__DOWNLOAD_BASE_URL__' }
+          }
+          if ($env:REMOTE_GNINA_URL) {
+            $lines = $lines -replace '__REMOTE_GNINA_URL__', $env:REMOTE_GNINA_URL
+            $lines = $lines -replace '__REMOTE_GNINA_TOKEN__', $env:REMOTE_GNINA_TOKEN
+          } else {
+            Write-Host "REMOTE_GNINA_URL unset -- this build will not offer GNINA rescoring at all (Vina docking still works)."
+            $lines = $lines | Where-Object { $_ -notmatch '__REMOTE_GNINA_URL__' -and $_ -notmatch '__REMOTE_GNINA_TOKEN__' }
+          }
+          Set-Content installer/PhytoScreen.bat -Value $lines
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            /DMyAppVersion=${{ steps.ver.outputs.version }} `
+            installer\phytoscreen.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhytoScreenSetup
+          path: installer/dist_installer/PhytoScreenSetup.exe
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installer/dist_installer/PhytoScreenSetup.exe

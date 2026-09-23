@@ -1,0 +1,18 @@
+Set A (approved) | annotated_targets: n=1965, n_nonzero=1965, mean=8.81, median=3, min=1, max=281
+   histogram (nonzero only): {'1': 492, '2-3': 522, '4-5': 285, '6-10': 274, '11-20': 208, '21+': 184}
+Set A (approved) | mechanistic_targets: n=1965, n_nonzero=679, mean=0.46, median=0, min=0, max=10
+   histogram (nonzero only): {'1': 526, '2-3': 136, '4-5': 14, '6-10': 3, '11-20': 0, '21+': 0}
+Set A (approved) | primary_targets: n=1965, n_nonzero=679, mean=0.46, median=0, min=0, max=10
+   histogram (nonzero only): {'1': 526, '2-3': 136, '4-5': 14, '6-10': 3, '11-20': 0, '21+': 0}
+Set B (clinical) | annotated_targets: n=2750, n_nonzero=2750, mean=6.54, median=2.0, min=1, max=419
+   histogram (nonzero only): {'1': 1057, '2-3': 815, '4-5': 331, '6-10': 276, '11-20': 129, '21+': 142}
+Set B (clinical) | mechanistic_targets: n=2750, n_nonzero=790, mean=0.38, median=0.0, min=0, max=6
+   histogram (nonzero only): {'1': 639, '2-3': 127, '4-5': 15, '6-10': 9, '11-20': 0, '21+': 0}
+Set B (clinical) | primary_targets: n=2750, n_nonzero=790, mean=0.38, median=0.0, min=0, max=6
+   histogram (nonzero only): {'1': 639, '2-3': 127, '4-5': 15, '6-10': 9, '11-20': 0, '21+': 0}
+Set D (sparse-target) | annotated_targets: n=334, n_nonzero=334, mean=33.84, median=12.0, min=1, max=419
+   histogram (nonzero only): {'1': 23, '2-3': 30, '4-5': 38, '6-10': 69, '11-20': 49, '21+': 125}
+Set D (sparse-target) | mechanistic_targets: n=334, n_nonzero=141, mean=0.77, median=0.0, min=0, max=9
+   histogram (nonzero only): {'1': 86, '2-3': 39, '4-5': 7, '6-10': 9, '11-20': 0, '21+': 0}
+Set D (sparse-target) | primary_targets: n=334, n_nonzero=141, mean=0.77, median=0.0, min=0, max=9
+   histogram (nonzero only): {'1': 86, '2-3': 39, '4-5': 7, '6-10': 9, '11-20': 0, '21+': 0}
