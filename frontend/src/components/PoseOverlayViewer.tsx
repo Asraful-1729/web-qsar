@@ -48,6 +48,22 @@ export function PoseOverlayViewer({ crystalPoseSdf, redockedPosePdb }: { crystal
     viewerRef.current?.spin(spin ? "y" : false);
   }, [spin]);
 
+  const downloadImage = () => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    // 3Dmol's own PNG export of the CURRENT rendered canvas (whatever
+    // angle/zoom/spin state the user left it in) — a base64 data URI, so
+    // no Blob/createObjectURL needed (unlike this app's text-file
+    // downloads elsewhere), just point <a download> straight at it.
+    const uri = viewer.pngURI();
+    const a = document.createElement("a");
+    a.href = uri;
+    a.download = "experimental_vs_redocked_pose_overlay.png";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
   if (!available) return null;
 
   return (
@@ -66,6 +82,11 @@ export function PoseOverlayViewer({ crystalPoseSdf, redockedPosePdb }: { crystal
             }}
           >
             Reset view
+          </button>
+        )}
+        {show && (
+          <button type="button" className="btn-link" onClick={downloadImage}>
+            Download image
           </button>
         )}
         {show && (
