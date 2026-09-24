@@ -83,6 +83,15 @@ export function DownloadIcon(p: SVGProps<SVGSVGElement>) {
     </svg>
   );
 }
+export function AboutIcon(p: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...p}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v6" />
+      <circle cx="12" cy="7.5" r=".6" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
 
 export function RefreshIcon(p: SVGProps<SVGSVGElement>) {
   return (

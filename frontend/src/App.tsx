@@ -10,11 +10,12 @@ import { TargetInfoTab } from "./tabs/TargetInfoTab";
 import { SimilarityTab } from "./tabs/SimilarityTab";
 import { TargetFishingTab } from "./tabs/TargetFishingTab";
 import { DownloadsTab } from "./tabs/DownloadsTab";
+import { AboutTab } from "./tabs/AboutTab";
 
 function initialTab(): TabId {
   const h = window.location.hash.replace("#", "");
   if (
-    ["screen", "predict", "admet", "compare", "docking", "target", "similarity", "target_fishing", "downloads"].includes(h)
+    ["screen", "predict", "admet", "compare", "docking", "target", "similarity", "target_fishing", "downloads", "about"].includes(h)
   )
     return h as TabId;
   return "screen";
@@ -61,6 +62,9 @@ export default function App() {
         </div>
         <div className={tab === "downloads" ? "" : "hidden"}>
           <DownloadsTab />
+        </div>
+        <div className={tab === "about" ? "" : "hidden"}>
+          <AboutTab />
         </div>
       </Shell>
     </SidebarCollapseProvider>

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useState } from "react";
 import { useAppData } from "../lib/AppDataContext";
-import { AdmetIcon, CompareIcon, DockingIcon, DownloadIcon, LeafLattice, PredictIcon, ScreenIcon, SimilarityIcon, TargetFishingIcon, TargetInfoIcon } from "./Icons";
+import { AboutIcon, AdmetIcon, CompareIcon, DockingIcon, DownloadIcon, LeafLattice, PredictIcon, ScreenIcon, SimilarityIcon, TargetFishingIcon, TargetInfoIcon } from "./Icons";
 
 export type TabId =
   | "screen"
@@ -11,7 +11,8 @@ export type TabId =
   | "target"
   | "similarity"
   | "target_fishing"
-  | "downloads";
+  | "downloads"
+  | "about";
 
 const TABS: { id: TabId; label: string; icon: (p: any) => JSX.Element }[] = [
   { id: "screen", label: "Screen", icon: ScreenIcon },
@@ -23,6 +24,7 @@ const TABS: { id: TabId; label: string; icon: (p: any) => JSX.Element }[] = [
   { id: "target_fishing", label: "Target Prediction", icon: TargetFishingIcon },
   { id: "target", label: "Target Info", icon: TargetInfoIcon },
   { id: "downloads", label: "Downloads", icon: DownloadIcon },
+  { id: "about", label: "About", icon: AboutIcon },
 ];
 
 export function Shell({ tab, onTab, children }: { tab: TabId; onTab: (t: TabId) => void; children: React.ReactNode }) {
