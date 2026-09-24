@@ -113,12 +113,14 @@ jobs:
       - name: PyInstaller (see BUILD_WINDOWS.md for what each flag is for)
         run: >
           pyinstaller --noconfirm --windowed --name PhytoScreen
+          --icon "assets/icon.ico"
           --paths backend
           --add-data "frontend/dist;frontend/dist"
           --add-data "docking_registry.json;."
           --add-data "panel_results_v2.csv;."
           --add-data "models/curated;models/curated"
           --add-data "target_prediction_v2_data;target_prediction_v2_data"
+          --add-data "assets/icon.ico;assets"
           --add-data "bin;bin"
           --collect-all rdkit
           --collect-all autogluon
@@ -162,6 +164,31 @@ jobs:
           echo "Bundled target_prediction_v2_data/v2_index: ${v2_index_found}"
           if [ "$v2_index_found" -lt 1 ]; then
             echo "::error::target_prediction_v2_data/v2_index/compounds.csv.gz not found in the bundle — Target Prediction v2 will report unavailable. Check the --add-data \"target_prediction_v2_data;target_prediction_v2_data\" entry."
+            exit 1
+          fi
+
+          if [ ! -f dist/PhytoScreen/PhytoScreen.exe ]; then
+            echo "::error::dist/PhytoScreen/PhytoScreen.exe not found."
+            exit 1
+          fi
+          # A real embedded icon measurably changes the .exe's own size --
+          # PyInstaller writes the .ico's resources directly into it (not
+          # a separate bundled file, unlike assets/icon.ico under
+          # --add-data, which desktop.py reads at runtime for webview's
+          # own icon param). No easy way to inspect PE resources with
+          # plain bash/coreutils, so this checks the ingredient (the
+          # --icon flag actually pointed at a real file) rather than the
+          # baked-in result -- catches "the file got renamed/moved and
+          # --icon silently did nothing" (PyInstaller doesn't error on a
+          # missing --icon path, it just ships without one).
+          if [ ! -f assets/icon.ico ]; then
+            echo "::error::assets/icon.ico not found at build time — --icon would have silently done nothing. The .exe/shortcuts will show a generic icon."
+            exit 1
+          fi
+          icon_bundled=$(find dist/PhytoScreen -path "*/assets/icon.ico" | wc -l)
+          echo "Bundled assets/icon.ico (for webview's own icon param): ${icon_bundled}"
+          if [ "$icon_bundled" -lt 1 ]; then
+            echo "::error::assets/icon.ico not found in the bundle — check the --add-data \"assets/icon.ico;assets\" entry."
             exit 1
           fi
 

@@ -278,7 +278,16 @@ def main():
         # the frontend's Blob/<a download> CSV and PDB export buttons.
         webview.settings["ALLOW_DOWNLOADS"] = True
         window = webview.create_window("PhytoScreen", url, width=1280, height=860, min_size=(1000, 700))
-        webview.start()          # blocks until the window closes
+        # App/window icon -- on Windows the .exe's own embedded icon
+        # (PyInstaller's --icon flag, see BUILD_WINDOWS.md) is what
+        # actually shows in the taskbar/title bar/Explorer; this covers
+        # the platforms where pywebview reads a separate icon file
+        # itself (primarily GTK on Linux). assets/icon.ico is bundled
+        # the same way as docking_registry.json etc (see BUILD_WINDOWS.md/
+        # the CI workflow's --add-data list) -- FROZEN_ROOT-relative when
+        # frozen, repo-relative in dev.
+        icon_path = os.path.join(FROZEN_ROOT, "assets", "icon.ico")
+        webview.start(icon=icon_path if os.path.exists(icon_path) else None)          # blocks until the window closes
         return
     except ImportError:
         _log(f"[desktop] pywebview not installed. Open {url} in a browser, or `pip install pywebview`.")

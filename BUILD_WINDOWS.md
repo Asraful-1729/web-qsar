@@ -93,6 +93,31 @@ its "Stage target_prediction_v2_data" step):
     xcopy /E /I target_prediction_v2\phase3\orthologue_index target_prediction_v2_data\orthologue_index
     copy target_prediction_v2\phase2\data\target_name_map.json target_prediction_v2_data\target_name_map.json
 
+## 2b. App icon
+
+`assets/icon.ico` (a real multi-resolution Windows icon — 16/24/32/48/64/
+128/256px, generated from `assets/icon_source.png` via Pillow) is already
+committed — nothing to regenerate unless the logo changes. It's wired in
+three separate places, all needed (missing any one leaves a generic icon
+somewhere):
+- PyInstaller's `--icon "assets/icon.ico"` — embeds it into `PhytoScreen.exe`
+  itself (what Explorer/taskbar/Alt-Tab show).
+- `--add-data "assets/icon.ico;assets"` — bundles the raw file too, since
+  `desktop.py` also passes it to `webview.start(icon=...)` at runtime
+  (matters on platforms where pywebview reads a separate icon file, e.g.
+  GTK/Linux — harmless but unnecessary on Windows, where the embedded exe
+  icon already covers it).
+- `installer/phytoscreen.iss`'s `SetupIconFile` (the installer wizard/
+  uninstaller) and each `[Icons]` entry's explicit `IconFilename:
+  "{app}\PhytoScreen.exe"` — **this last one is the fix for a real bug**:
+  without it, Inno Setup defaults to the shortcut's *launch target's* own
+  icon, which is `PhytoScreen.bat` (a plain batch file — see
+  `installer/PhytoScreen.bat`), so both the Start Menu and Desktop
+  shortcuts showed a generic batch-file icon regardless of what icon the
+  real exe had. Regenerate the .ico from a new source image with:
+
+    python3 -c "from PIL import Image; im=Image.open('assets/icon_source.png').convert('RGBA'); im.save('assets/icon.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+
 Re-run this after any v2 index rebuild.
 
 ## 3. Remote GNINA setup (once, on a GPU server — not the Windows machine)
@@ -145,12 +170,14 @@ and a real Vina/GNINA run end-to-end inside a packaged build.
 From the project root:
     pip install pyinstaller
     pyinstaller --noconfirm --windowed --name PhytoScreen ^
+      --icon "assets/icon.ico" ^
       --paths backend ^
       --add-data "frontend/dist;frontend/dist" ^
       --add-data "docking_registry.json;." ^
       --add-data "panel_results_v2.csv;." ^
       --add-data "models/curated;models/curated" ^
       --add-data "target_prediction_v2_data;target_prediction_v2_data" ^
+      --add-data "assets/icon.ico;assets" ^
       --add-data "bin;bin" ^
       --collect-all rdkit ^
       --collect-all autogluon ^

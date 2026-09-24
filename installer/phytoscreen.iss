@@ -42,15 +42,26 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
+; Installer wizard/uninstaller icon — separate from the [Icons] entries
+; below (those are the app's OWN shortcuts, shown after install).
+SetupIconFile=..\assets\icon.ico
 
 [Files]
 Source: "..\dist\PhytoScreen\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 Source: "PhytoScreen.bat"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
+; IconFilename explicitly points at PhytoScreen.exe (which HAS the real
+; icon embedded via PyInstaller's --icon flag, see BUILD_WINDOWS.md) --
+; without this, Inno Setup defaults to the shortcut's own Filename
+; target's icon, which is PhytoScreen.bat (a plain batch file launcher,
+; see PhytoScreen.bat's own docstring for why the app launches through it
+; rather than the exe directly) -- Windows shows a generic batch-file
+; icon for that, regardless of what icon the real exe has. This was the
+; actual cause of "no logo when desktop application show in desktop".
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\PhytoScreen.exe"; WorkingDir: "{app}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\PhytoScreen.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"
