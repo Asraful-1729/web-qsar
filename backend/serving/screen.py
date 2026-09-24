@@ -161,7 +161,17 @@ def run(target_id, smiles_list, make_diagram=True, progress=None, advanced=None)
         dock_will_run = dprofile is not None and dock_ready
         if dock_will_run:
             progress(6, STEPS[6], 0, len(valid_std))
-            engine = DOCK_ENGINES.VinaEngine(exhaustiveness=advanced.get("exhaustiveness") or 8)
+            # Real bug found and fixed: no cpu cap here meant Vina's own
+            # search used EVERY core by default (Vina's own default when
+            # --cpu isn't passed) for each compound docked -- during a
+            # multi-compound Screening run this could starve the rest of
+            # the app of CPU for the run's whole duration, making
+            # unrelated features (even non-docking ones, like Target
+            # Prediction's own CPU-bound numpy work) appear to hang even
+            # without any actual bug/timeout involved. Leave at least one
+            # core free so the app stays responsive while docking runs.
+            vina_cpu_cap = max(1, (os.cpu_count() or 4) - 1)
+            engine = DOCK_ENGINES.VinaEngine(exhaustiveness=advanced.get("exhaustiveness") or 8, cpu=vina_cpu_cap)
             rescorer = DOCK_ENGINES.NullRescorer() if advanced.get("use_gnina") is False else DOCK_ENGINES.GninaRescorer()
             n_poses = advanced.get("n_poses") or 9
             for i, s in enumerate(valid_std):

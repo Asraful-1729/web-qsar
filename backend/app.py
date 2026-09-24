@@ -937,7 +937,11 @@ def _resolve_docking_setup(target_id, advanced):
         raise HTTPException(400, f"'{target_id}' has no site-specific binding box on record — "
                                  "use Blind mode, or Advanced Settings to pick a structure with a real ligand.")
 
-    engine = VinaEngine(exhaustiveness=adv.exhaustiveness or 8)
+    # Same fix as serving/screen.py's own VinaEngine instantiation: no cpu
+    # cap meant Vina used every core by default, able to starve the rest
+    # of the app for the docking call's duration. Leave one core free.
+    vina_cpu_cap = max(1, (os.cpu_count() or 4) - 1)
+    engine = VinaEngine(exhaustiveness=adv.exhaustiveness or 8, cpu=vina_cpu_cap)
     rescorer = NullRescorer() if adv.use_gnina is False else GninaRescorer()
     n_poses = adv.n_poses or 9
     return profile, engine, rescorer, n_poses, caveat

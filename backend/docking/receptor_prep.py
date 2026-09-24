@@ -391,7 +391,7 @@ def receptor_to_pdbqt(clean_pdb, out_pdbqt):
             return out_pdbqt
     if shutil.which("prepare_receptor"):
         subprocess.run(["prepare_receptor", "-r", clean_pdb, "-o", out_pdbqt],
-                       check=True, capture_output=True, text=True, **hidden_subprocess_kwargs())
+                       check=True, capture_output=True, text=True, timeout=120, **hidden_subprocess_kwargs())
         return out_pdbqt
     raise RuntimeError("no receptor-prep tool found. `pip install meeko` (mk_prepare_receptor) "
                        "or install ADFR/MGLTools prepare_receptor.")

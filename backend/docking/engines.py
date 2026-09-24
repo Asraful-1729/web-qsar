@@ -11,6 +11,22 @@ from dataclasses import dataclass, field
 from rdkit import Chem
 from subprocess_util import hidden_subprocess_kwargs
 
+# Real bug found and fixed: NONE of this module's subprocess.run() calls
+# had a timeout, so a single pathological compound could hang Vina/GNINA
+# forever. Reported symptom: after a Screening run, EVERY other feature
+# (including totally unrelated ones like Target Prediction) appeared to
+# hang too, fixed only by closing and restarting the whole app. Root
+# cause: a stuck vina.exe (no --cpu cap during screening either, see
+# serving/screen.py) grabs every CPU core and never releases them, since
+# subprocess.run() with no timeout blocks indefinitely waiting for a
+# child that never exits -- starving every other CPU-bound request in
+# the same process, and the orphaned child process itself only dies when
+# the whole app (its parent) is killed. A timeout turns a hang into a
+# clean per-compound error instead.
+VINA_TIMEOUT_SECONDS = int(os.environ.get("PHYTO_VINA_TIMEOUT_SECONDS", "300"))
+GNINA_TIMEOUT_SECONDS = int(os.environ.get("PHYTO_GNINA_TIMEOUT_SECONDS", "60"))
+OBABEL_TIMEOUT_SECONDS = int(os.environ.get("PHYTO_OBABEL_TIMEOUT_SECONDS", "60"))
+
 
 @dataclass
 class Pose:
@@ -61,7 +77,7 @@ def _pdbqt_file_to_rdkit(path):
         sdf = path + ".sdf"
         subprocess.run(["obabel", path, "-O", sdf], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       **hidden_subprocess_kwargs())
+                       timeout=OBABEL_TIMEOUT_SECONDS, **hidden_subprocess_kwargs())
         return [m for m in Chem.SDMolSupplier(sdf, removeHs=False) if m is not None]
 
 
@@ -104,7 +120,8 @@ class VinaEngine(DockingEngine):
                 cmd += ["--seed", str(seed)]
             if self.cpu:
                 cmd += ["--cpu", str(self.cpu)]
-            subprocess.run(cmd, check=True, capture_output=True, text=True, **hidden_subprocess_kwargs())
+            subprocess.run(cmd, check=True, capture_output=True, text=True,
+                           timeout=VINA_TIMEOUT_SECONDS, **hidden_subprocess_kwargs())
             scores = [float(m) for m in re.findall(r"REMARK VINA RESULT:\s+([-\d.]+)", open(out).read())]
             mols = _pdbqt_file_to_rdkit(out)
         return [Pose("vina", scores[i] if i < len(scores) else float("nan"),
@@ -148,7 +165,8 @@ class GninaRescorer:
             w = Chem.SDWriter(lig_sdf); w.write(pose_mol); w.close()
             try:
                 r = subprocess.run([self.binary, "-r", receptor_pdb, "-l", lig_sdf, "--score_only"],
-                                   check=True, capture_output=True, text=True, **hidden_subprocess_kwargs())
+                                   check=True, capture_output=True, text=True,
+                                   timeout=GNINA_TIMEOUT_SECONDS, **hidden_subprocess_kwargs())
             except Exception as e:
                 return {"error": str(e)}
             return parse_gnina(r.stdout)
