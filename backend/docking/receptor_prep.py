@@ -147,7 +147,11 @@ def extract_reference_ligand(pdb_path, ref_resname=None, chain=None, resnum=None
     key = max(candidates, key=lambda k: len(candidates[k][0]))
     coords, atoms = candidates[key]
     mw = _approx_heavy_atom_mw(atoms)
-    return coords, key[0], coords.shape[0], mw
+    # key[1] (the chain this ligand actually sits on) is returned so callers
+    # that didn't already know the chain (an AUTOMATIC pick, no explicit
+    # ref_resname/chain given) can still restrict receptor stripping to it —
+    # see build_receptor()'s own real bug/fix note for why this matters.
+    return coords, key[0], coords.shape[0], mw, key[1]
 
 
 def list_ligands(pdb_path, min_heavy_atoms=5, max_peptide_gap=2, min_peptide_run=3):
@@ -588,9 +592,25 @@ def build_receptor(pdb_path, target_id, name=None, ref_resname=None, chain=None,
 
     _p("Extracting reference ligand")
     try:
-        ref_coords, ref_name, n_ref, ref_mw = extract_reference_ligand(pdb_path, ref_resname, ligand_chain, resnum=resnum)
+        ref_coords, ref_name, n_ref, ref_mw, ref_chain = extract_reference_ligand(pdb_path, ref_resname, ligand_chain, resnum=resnum)
         center, box_size = grid_box_from_ligand(ref_coords, padding=padding)
         prep_report.append({"label": "Extract reference ligand", "detail": f"{ref_name}: {n_ref} atom(s), ~{ref_mw:.0f} Da"})
+        # Real bug found and fixed: when the caller never passed an explicit
+        # `chain` (the common "automatic pick" path — no ligand_resname/chain
+        # given, e.g. a user hasn't picked a specific structure yet), `chain`
+        # stayed None all the way into strip_to_protein() below, which then
+        # keeps EVERY chain in the file instead of just the one the ligand
+        # actually sits on. Harmless for a single-chain deposition, but for
+        # a real multi-chain assembly (confirmed on 5LF1, a proteasome
+        # subunit complex: 52,156 raw atoms) this meant PDBFixer/OpenMM/
+        # Meeko ran on the WHOLE multi-chain mess instead of ~1,700 atoms —
+        # measured 270s (vs. 5s correctly chain-restricted) before failing
+        # outright with a Meeko "interrupted residues" error from mixing
+        # disconnected chains into one "receptor". Now that extract_reference_ligand()
+        # tells us exactly which chain the (auto-picked or explicit) ligand
+        # is on, restrict to it whenever the caller didn't already pin one.
+        if chain is None:
+            chain = ref_chain
     except ValueError:
         if ref_resname:
             raise   # an explicit pick (curated data or a user's own choice) that doesn't exist here is a real error — surface it, don't silently fall back

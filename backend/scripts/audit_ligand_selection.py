@@ -142,7 +142,7 @@ def _measure_from_files(target_id, pdb_source, resname, chain=None, ligand_chain
         return None
     try:
         from docking.receptor_prep import extract_reference_ligand, pocket_residues
-        coords, found_name, n_atoms, mw = extract_reference_ligand(raw_path, ref_resname=resname, chain=ligand_chain or chain)
+        coords, found_name, n_atoms, mw, _found_chain = extract_reference_ligand(raw_path, ref_resname=resname, chain=ligand_chain or chain)
         n_pocket = len(pocket_residues(clean_path, coords, cutoff=5.0))
         return {"n_atoms": n_atoms, "mw": round(mw, 1), "n_pocket_residues": n_pocket}
     except Exception as e:
