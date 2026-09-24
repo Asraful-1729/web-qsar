@@ -8,6 +8,8 @@ call has real (if small) latency.
 import shutil
 import subprocess
 
+from subprocess_util import hidden_subprocess_kwargs
+
 _cache = None
 
 
@@ -34,7 +36,7 @@ def snapshot():
     vina_bin = shutil.which("vina")
     if vina_bin:
         try:
-            r = subprocess.run([vina_bin, "--version"], capture_output=True, text=True, timeout=5)
+            r = subprocess.run([vina_bin, "--version"], capture_output=True, text=True, timeout=5, **hidden_subprocess_kwargs())
             out["vina"] = (r.stdout or r.stderr).strip()
         except Exception:
             pass

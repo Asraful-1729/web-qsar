@@ -23,6 +23,7 @@ import os, json, shutil, subprocess, tempfile
 import numpy as np
 
 from .profile import grid_box_from_ligand, REGISTRY, registry_lock, write_registry_json
+from subprocess_util import hidden_subprocess_kwargs
 
 # The additive/cryoprotectant/cofactor blacklist and MW floor used to decide
 # "is this HETATM group a real ligand" live in scripts/select_receptor.py
@@ -390,7 +391,7 @@ def receptor_to_pdbqt(clean_pdb, out_pdbqt):
             return out_pdbqt
     if shutil.which("prepare_receptor"):
         subprocess.run(["prepare_receptor", "-r", clean_pdb, "-o", out_pdbqt],
-                       check=True, capture_output=True, text=True)
+                       check=True, capture_output=True, text=True, **hidden_subprocess_kwargs())
         return out_pdbqt
     raise RuntimeError("no receptor-prep tool found. `pip install meeko` (mk_prepare_receptor) "
                        "or install ADFR/MGLTools prepare_receptor.")
