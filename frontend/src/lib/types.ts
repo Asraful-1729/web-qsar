@@ -247,6 +247,12 @@ export interface RedockingValidationResult {
   rmsd_error?: string;
   reference_ligand_resname?: string;
   error?: string;
+  /** Set alongside status "no_crystal_reference" specifically when a
+      manually-picked structure's own crystal-pose build failed (see
+      docking_receptor_custom/docking_alternate_ligand_build in app.py) —
+      the actual reason (e.g. RCSB has no SMILES for this ligand, or the
+      deposited atoms don't match its real connectivity), not just "skipped". */
+  crystal_sdf_error?: string;
 }
 
 /** One real co-crystallized ligand found in a PDB entry — see

@@ -173,6 +173,25 @@ def redock_reference_for_profile(profile, exhaustiveness=8, n_poses=10):
     crystal_sdf = profile.get("crystal_sdf")
     reference_smiles = profile.get("reference_smiles")
     if not crystal_sdf or not os.path.exists(crystal_sdf):
+        # A manually-picked structure (docking_receptor_custom /
+        # docking_alternate_ligand_build) always tries to build its OWN
+        # crystal_sdf and, on failure, records why in crystal_sdf_error
+        # instead — see those endpoints. Falling through to the registry
+        # DEFAULT target's crystal_ligand.sdf below in that case was a real
+        # bug: that file is a DIFFERENT PDB entry/ligand (whatever the
+        # target's automatic default happens to be), in a completely
+        # different receptor's coordinate frame, so "redocking" against it
+        # produced either a meaningless/erroring comparison or, worse, an
+        # apparently-successful RMSD for the WRONG molecule entirely — this
+        # is what made "redock a different/custom PDB" look broken (while
+        # the automatic-default path, which legitimately has no crystal_sdf
+        # key at all, correctly used the fallback). A profile that never
+        # attempted a custom build (the plain registry default) has neither
+        # key set, so it still falls through to the fallback below exactly
+        # as before.
+        if "crystal_sdf_error" in profile:
+            return {"status": "no_crystal_reference", "reference_ligand_resname": resname,
+                    "crystal_sdf_error": profile["crystal_sdf_error"]}
         from . import profile as DOCK_PROFILE
         target_id = profile.get("target_id")
         # The registry's own default structure keeps its crystal pose at

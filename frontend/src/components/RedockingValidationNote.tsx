@@ -36,7 +36,11 @@ export function RedockingValidationNote({ result }: { result: RedockingValidatio
           <PoseOverlayViewer crystalPoseSdf={result.crystal_pose_sdf} redockedPosePdb={result.redocked_pose_pdb} />
         </>
       ) : (
-        <div className="text-inkmut">{STATUS_MESSAGES[result.status] || result.error || "Redocking validation could not run."}</div>
+        <div className="text-inkmut">
+          {result.status === "no_crystal_reference" && result.crystal_sdf_error
+            ? `Could not build a crystal reference pose for this structure's ${result.reference_ligand_resname || "reference"} ligand — ${result.crystal_sdf_error}`
+            : STATUS_MESSAGES[result.status] || result.error || "Redocking validation could not run."}
+        </div>
       )}
       <div className="mt-0.5 text-inkmut">
         Sanity check on this structure's own docking setup (same PDB/exhaustiveness/num poses as the run above) — not a score for any
