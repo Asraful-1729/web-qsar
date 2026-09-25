@@ -55,7 +55,8 @@ REMOTE_URL = os.environ.get("REMOTE_GNINA_URL", "").rstrip("/")
 REMOTE_TOKEN = os.environ.get("REMOTE_GNINA_TOKEN", "")
 TIMEOUT = float(os.environ.get("REMOTE_GNINA_TIMEOUT", "45"))
 
-_health_cache = {"value": None, "checked": False}
+_HEALTH_TTL_SECONDS = 60
+_health_cache = {"value": None, "checked_at": 0.0}
 
 
 def _remote_configured():
@@ -63,11 +64,21 @@ def _remote_configured():
 
 
 def _remote_health():
-    """Cached for the process lifetime -- a health probe on every single
-       available() call (called often, e.g. to decide whether to show
-       the GNINA toggle in Advanced Settings at all) would be wasteful
-       and slow down the UI on every docking-tab render."""
-    if _health_cache["checked"]:
+    """Cached for _HEALTH_TTL_SECONDS, not the whole process lifetime -- a
+       health probe on every single available() call (called often, e.g.
+       to decide whether to show the GNINA toggle in Advanced Settings at
+       all) would be wasteful and slow down the UI on every docking-tab
+       render, but caching FOREVER (the original behaviour) meant one
+       transient failure -- a brief network hiccup exactly when the app
+       happened to start, or the remote server mid-restart -- permanently
+       disabled GNINA for the rest of that desktop session even once the
+       network/server were fine again, with no way to recover short of
+       quitting and reopening the whole app. A short TTL keeps the same
+       "don't probe on every render" cost savings while letting a later
+       call see a real server that's since come back up."""
+    import time
+    now = time.time()
+    if now - _health_cache["checked_at"] < _HEALTH_TTL_SECONDS:
         return _health_cache["value"]
     ok = False
     if _remote_configured():
@@ -78,7 +89,7 @@ def _remote_health():
         except Exception:
             ok = False
     _health_cache["value"] = ok
-    _health_cache["checked"] = True
+    _health_cache["checked_at"] = now
     return ok
 
 
