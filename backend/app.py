@@ -1731,6 +1731,14 @@ def screen_export_csv(jid: str):
         "qsar_confidence": r["qsar"]["confidence"],
         "vina_score": (r["docking"] or {}).get("vina_score"),
         "docking_confidence": (r["docking"] or {}).get("confidence"),
+        # GNINA CNN rescoring (see serving/screen.py, which nests this the
+        # same way dock_compound() does) — this export never included
+        # these columns at all, regardless of whether GNINA actually ran
+        # for a given compound; matches export_package.py's own
+        # gnina_* column names for the equivalent Docking-tab export.
+        "gnina_cnn_score": ((r["docking"] or {}).get("gnina") or {}).get("cnn_score"),
+        "gnina_cnn_affinity": ((r["docking"] or {}).get("gnina") or {}).get("cnn_affinity"),
+        "gnina_affinity": ((r["docking"] or {}).get("gnina") or {}).get("gnina_affinity"),
         "fused_score": r["fused_score"], "caveats": "; ".join(r["caveats"]),
     } for r in rows])
     buf = io.StringIO(); df.to_csv(buf, index=False); buf.seek(0)
