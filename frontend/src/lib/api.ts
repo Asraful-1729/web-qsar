@@ -15,7 +15,6 @@ import type {
   EnrichmentRunSettings,
   PredictResponse,
   SimilarityResult,
-  TargetFishingResult,
   TargetPredictionV2Result,
   ResearchReportResponse,
   ReceptorProfile,
@@ -262,20 +261,15 @@ export const similarityDownloadCancel = (jid: string) => api<{ ok: boolean }>(`/
 export const similaritySearch = (smiles: string, threshold = 0.4, top_n = 50) =>
   api<SimilarityResult>("/api/similarity/search", json({ smiles, threshold, top_n }));
 
-// ---------- A2: compound -> target prediction ----------
-export const targetFishingStatus = () => api<{ available: boolean }>("/api/target_fishing/status");
-export const targetFishingSearch = (smiles: string, threshold = 0.4) =>
-  api<TargetFishingResult>("/api/target_fishing/search", json({ smiles, threshold }));
-export const suggestCuratedCompounds = (q: string, limit = 8) =>
-  api<{ results: CuratedCompoundSuggestion[] }>(`/api/target_fishing/suggest_compounds?q=${encodeURIComponent(q)}&limit=${limit}`);
-
-// ---------- A2v2: Target Prediction v2 (density-adaptive, independently validated) ----------
+// ---------- A2: compound -> target prediction (v2 -- density-adaptive, independently validated) ----------
 export const targetPredictionV2Status = () => api<{ available: boolean }>("/api/target_prediction_v2/status");
 // Default requests every matched target, not just a top slice — the
 // backend caps at 10,000 (above n_targets_indexed, ~4,882) so this is
 // effectively "all", not an arbitrary large-but-still-truncating number.
 export const targetPredictionV2Predict = (smiles: string, top_k = 10000) =>
   api<TargetPredictionV2Result>("/api/target_prediction_v2/predict", json({ smiles, top_k }));
+export const suggestCuratedCompounds = (q: string, limit = 8) =>
+  api<{ results: CuratedCompoundSuggestion[] }>(`/api/target_prediction_v2/suggest_compounds?q=${encodeURIComponent(q)}&limit=${limit}`);
 
 // ---------- A5: research story generator ----------
 export const researchReport = (kind: "docking" | "screen", jobId: string, smiles: string, includeLiterature = true) =>

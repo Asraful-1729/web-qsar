@@ -6,7 +6,7 @@ analysis -> ADMET -> off-target analysis -> overall evidence summary)
 for ONE already-docked compound, reusing every module built earlier in
 this phase rather than re-implementing anything:
   - A1's plant_source (already threaded through run_metadata)
-  - A2's target_fishing.search() for target prediction + off-target
+  - A2's target_prediction_v2.predict() for target prediction + off-target
   - A4's literature.search() for reported bioactivity (best-effort --
     this is the report's only network-dependent section, so a failure
     here degrades that ONE section rather than the whole report)
@@ -68,22 +68,31 @@ def _reported_activity(query):
         return {"available": False, "query": query, "note": str(e)}
 
 
-def _target_and_off_target(smiles, target_id, threshold=0.4):
-    import target_fishing as TF
-    if not TF.available():
-        na = {"available": False, "note": "Target-fishing index not available in this build."}
+def _target_and_off_target(smiles, target_id, top_k=50):
+    """Ligand-based target prediction + off-target signal, via
+       target_prediction_v2 (this app's current, validated engine -- the
+       earlier v1 engine, target_fishing.py, was removed once v2 was
+       validated to significantly outperform it; see
+       documentation/TARGET_PREDICTION.md). top_k=50 is a generous search
+       breadth for finding this specific report's on-target match and a
+       handful of off-targets, not an attempt to rank every indexed
+       target (that's what the Target Prediction tab itself is for)."""
+    import target_prediction_v2 as TP2
+    if not TP2.available():
+        na = {"available": False, "note": "Target-prediction index not available in this build."}
         return na, na
     target_chembl = target_id.split("_", 1)[0] if target_id else None
     try:
-        r = TF.search(smiles, threshold=threshold)
+        r = TP2.predict(smiles, top_k=top_k)
     except ValueError as e:
         na = {"available": False, "note": str(e)}
         return na, na
-    on_target = next((h for h in r["results"] if h["target_chembl"] == target_chembl), None)
-    off_targets = [h for h in r["results"] if h is not on_target]
+    results = r["results"]
+    on_target = next((h for h in results if h["target_chembl"] == target_chembl), None)
+    off_targets = [h for h in results if h is not on_target]
     return (
         {"available": True, "on_target_supported": on_target is not None, "hit": on_target,
-         "n_targets_searched": r["n_targets_searched"]},
+         "regime": r["regime"], "n_targets_searched": r["n_targets_indexed"]},
         {"available": True, "n_off_targets": len(off_targets), "hits": off_targets[:10]},
     )
 
@@ -144,15 +153,17 @@ def _evidence_summary(target_id, docking, qsar, target_pred, off_target, admet, 
     if target_pred.get("available"):
         if target_pred.get("on_target_supported"):
             hit = target_pred["hit"]
+            evidence = hit.get("evidence") or {}
+            n_support = len(evidence.get("native_neighbours") or []) + len(evidence.get("orthologue_neighbours") or [])
             lines.append(
-                f"Independent ligand-based evidence supports this target: {hit['n_similar_actives']} "
-                f"structurally similar known active(s) exist for {target_id} (best Tanimoto {hit['best_similarity']})."
+                f"Independent ligand-based evidence supports this target: score {hit['score']} ({hit['confidence_label']})"
+                + (f", backed by {n_support} supporting near-neighbour compound(s)" if n_support else "") + "."
             )
         else:
             lines.append(f"No structurally similar known actives were found for {target_id} in the curated bioactivity data.")
 
     if off_target.get("available") and off_target.get("n_off_targets"):
-        names = ", ".join(h["target_id"] for h in off_target["hits"][:5])
+        names = ", ".join((h.get("target_pref_name") or h["target_chembl"]) for h in off_target["hits"][:5])
         lines.append(f"Similarity-based off-target signal was also found for {off_target['n_off_targets']} other target(s): {names}.")
 
     if admet.get("available"):
@@ -319,7 +330,7 @@ def to_markdown(report):
     ot = r["off_target_analysis"]
     if ot.get("available") and ot.get("hits"):
         for h in ot["hits"]:
-            lines.append(f"- {h['target_id']} — best similarity {h['best_similarity']}, {h['n_similar_actives']} similar active(s)")
+            lines.append(f"- {h.get('target_pref_name') or h['target_chembl']} — score {h['score']} ({h['confidence_label']})")
     elif ot.get("available"):
         lines.append("_No off-target similarity signal found._")
     else:

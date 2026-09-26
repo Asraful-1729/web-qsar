@@ -1796,65 +1796,15 @@ def similarity_search(body: SimilaritySearchBody):
 
 
 # ============================================================
-#  A2 — Compound -> target prediction (target_fishing.py)
+#  A2 — Compound -> target prediction (target_prediction_v2.py)
 # ============================================================
-import target_fishing as TF
-
-
-class TargetFishingBody(BaseModel):
-    smiles: str
-    threshold: float = Field(default=0.4, ge=0.0, le=1.0)
-
-
-@app.get("/api/target_fishing/status")
-def target_fishing_status():
-    """Whether the precomputed target-fishing fingerprint index is
-       present — it's built offline (see scripts/build_target_fishing_index.py)
-       and shipped as a static artifact, so this is normally always true;
-       kept as an explicit check anyway so the frontend can show a clear
-       error instead of a raw 503 if a build ever ships without it."""
-    return {"available": TF.available()}
-
-
-@app.post("/api/target_fishing/search")
-def target_fishing_search(body: TargetFishingBody):
-    """Ligand-based 'which targets might this compound hit' search:
-       Tanimoto similarity to known bioactive compounds from a broad
-       ChEMBL pull (see target_fishing.py's module docstring for the exact
-       filter/provenance and the evidence_score formula) — the same
-       'guilt by association' principle SwissTargetPrediction uses, not a
-       calibrated probability."""
-    try:
-        return TF.search(body.smiles, threshold=body.threshold)
-    except FileNotFoundError:
-        raise HTTPException(503, "Target-fishing index not available in this build.")
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-
-
-@app.get("/api/target_fishing/suggest_compounds")
-def target_fishing_suggest_compounds(q: str = "", limit: int = 8):
-    """As-you-type suggestions from the target-fishing index (local, no
-       network) — matches a SMILES fragment, a target's ChEMBL id, or a
-       target's preferred name."""
-    try:
-        return {"results": TF.suggest_compounds(q, limit=limit)}
-    except FileNotFoundError:
-        raise HTTPException(503, "Target-fishing index not available in this build.")
-
-
-# ============================================================
-#  A2v2 — Target Prediction v2 (target_prediction_v2.py)
-# ============================================================
-# A separate, independently-validated method from A2 above, NOT a drop-in
-# replacement wired into the same endpoint — see
-# target_prediction_v2/METHODS_AND_VALIDATION.md for the full account.
 # Density-adaptive retrieval (pool k=10 weighted votes when >=8 neighbours
-# exist at Tanimoto>=0.5, else fall back to best-similarity), validated to
-# significantly beat both v1's production ranking and a genuine SEA
-# reimplementation on genuinely held-out data (G2 result). Kept as its own
-# endpoint family, both methods available side by side, rather than
-# silently swapping A2's production behaviour.
+# exist at Tanimoto>=0.5, else fall back to best-similarity). This
+# replaced an earlier v1 engine (target_fishing.py, best-similarity +
+# heuristic evidence score) that was removed once v2 was validated to
+# significantly beat it on genuinely held-out data — see
+# target_prediction_v2/METHODS_AND_VALIDATION.md and
+# documentation/TARGET_PREDICTION.md for the full account.
 import target_prediction_v2 as TPV2
 
 
@@ -1888,6 +1838,19 @@ def target_prediction_v2_predict(body: TargetPredictionV2Body):
         raise HTTPException(503, "Target Prediction v2 index not available in this build.")
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.get("/api/target_prediction_v2/suggest_compounds")
+def target_prediction_v2_suggest_compounds(q: str = "", limit: int = 8):
+    """As-you-type suggestions from the v2 bioactivity index (local, no
+       network) — matches a SMILES fragment, a target's ChEMBL id, or a
+       target's preferred name. Moved here from the removed v1 engine
+       (target_fishing.py's identically-shaped suggest_compounds) when v1
+       was deleted — same matching logic, against the v2 index instead."""
+    try:
+        return {"results": TPV2.suggest_compounds(q, limit=limit)}
+    except FileNotFoundError:
+        raise HTTPException(503, "Target Prediction v2 index not available in this build.")
 
 
 # ============================================================

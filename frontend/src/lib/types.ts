@@ -488,46 +488,13 @@ export interface SimilarityResult {
   results: SimilarityHit[];
 }
 
-export interface TargetFishingCompound {
-  smiles: string;
-  tanimoto: number;
-  pchembl_value?: number | null;
-}
-export interface TargetFishingHit {
-  target_chembl: string;
-  /** Human-readable ChEMBL target name — always present; use this for
-      display, target_id is not. */
-  target_pref_name: string | null;
-  /** Only set when this ChEMBL target happens to also be one of this
-      app's own docking/QSAR targets — most target-fishing hits won't
-      have one, since the reference pool is much broader than this app's
-      own target list. null means "not one of our targets," not an error. */
-  target_id: string | null;
-  n_similar_actives: number;
-  best_similarity: number;
-  mean_similarity: number;
-  best_pchembl: number | null;
-  mean_pchembl: number | null;
-  n_scaffolds: number;
-  /** A documented, rule-based combination of similarity + scaffold
-      diversity + potency (see backend/target_fishing.py's module
-      docstring for the exact formula and weights) — NOT a probability,
-      NOT statistically calibrated. Use for ranking/sorting only. */
-  evidence_score: number;
-  compounds: TargetFishingCompound[];
-}
-export interface TargetFishingResult {
-  n_indexed_compound_target_pairs: number;
-  n_targets_searched: number;
-  n_targets_matched: number;
-  results: TargetFishingHit[];
-}
-/** Target Prediction v2 — a separate, independently-validated method from
-    TargetFishing (v1) above, not a drop-in replacement. See
+/** Target Prediction v2 — this app's compound -> target prediction
+    engine (an earlier v1 engine existed and was removed once v2 was
+    validated to significantly beat it on genuinely held-out data). See
     target_prediction_v2/METHODS_AND_VALIDATION.md for the full validation
-    account (significantly beats v1 and a real SEA reimplementation on
-    genuinely held-out data) and backend/target_prediction_v2.py's module
-    docstring for the method itself. */
+    account (also beats a real SEA reimplementation) and
+    backend/target_prediction_v2.py's module docstring for the method
+    itself. */
 export interface TargetPredictionV2NativeNeighbour {
   smiles: string;
   tanimoto: number;

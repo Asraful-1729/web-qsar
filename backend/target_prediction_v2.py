@@ -310,6 +310,60 @@ def predict(query_smiles, top_k=25):
     }
 
 
+def suggest_compounds(query, limit=8):
+    """As-you-type suggestions, matched against this SAME v2 index --
+       ported from the removed v1 engine's identically-shaped function
+       when v1 was deleted (query substring against a compound's SMILES,
+       its target's ChEMBL id, or its target's preferred name; no
+       fingerprinting, cheap enough for every keystroke). v2's own index
+       (see _load()) carries no target_pref_name column of its own --
+       names come from the separate _load_target_names() map -- and no
+       app-registry target_id mapping at all (unlike v1's index, which
+       had one baked in for the subset of targets this app also docks/
+       models); target_id is therefore always None here, same as any
+       ChEMBL target v1 itself had no app mapping for.
+
+       Returns a list of {smiles, target_chembl, target_pref_name,
+       target_id, pchembl_value}, or [] for an empty/too-short query --
+       never raises for a bad query, only FileNotFoundError if the index
+       itself is missing."""
+    if not available():
+        raise FileNotFoundError("target_prediction_v2 index not built")
+    query = (query or "").strip()
+    if len(query) < 2:
+        return []
+    limit = max(1, min(int(limit), 20))
+
+    _, _, df = _load()
+    names = _load_target_names()
+    q = query.lower()
+    name_matches = {tc for tc, nm in names.items() if nm and q in nm.lower()}
+    mask = (
+        df["smiles"].str.lower().str.contains(q, regex=False)
+        | df["target_chembl"].str.lower().str.contains(q, regex=False)
+        | df["target_chembl"].isin(name_matches)
+    )
+    hits = df[mask]
+    if hits.empty:
+        return []
+    # one row per compound: keep its highest-pchembl (most-potent, most
+    # informative) target when the same SMILES appears against several.
+    hits = hits.sort_values("pchembl_value", ascending=False).drop_duplicates(subset="smiles").head(limit)
+
+    out = []
+    for _, r in hits.iterrows():
+        pchembl = r.get("pchembl_value")
+        tc = r["target_chembl"]
+        out.append({
+            "smiles": r["smiles"],
+            "target_chembl": tc,
+            "target_pref_name": names.get(tc),
+            "target_id": None,
+            "pchembl_value": (float(pchembl) if pd.notna(pchembl) else None),
+        })
+    return out
+
+
 def _cli():
     if len(sys.argv) < 2:
         print("Usage: python3 target_prediction_v2.py \"<SMILES>\" [top_k]", file=sys.stderr)
